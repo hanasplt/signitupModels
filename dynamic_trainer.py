@@ -7,6 +7,7 @@
 # and saves the trained model + label encoder.
 # =========================================================
 
+import os
 import pickle
 import numpy as np
 import tensorflow as tf
@@ -231,11 +232,21 @@ history = model.fit(
 # -----------------------------
 # SAVE MODEL & LABEL ENCODER
 # -----------------------------
-# Save trained model to .h5 file and label encoder to .pickle
-model.save('gesture_lstm_model.h5')
-with open('label_encoder.pickle', 'wb') as f:
+# Folder where model + encoder will be saved
+SAVE_DIR = "./trained_models"   # 👈 Change this path to wherever you want
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# Define full file paths
+MODEL_PATH = os.path.join(SAVE_DIR, "gesture_lstm_model.h5")
+ENCODER_PATH = os.path.join(SAVE_DIR, "label_encoder.pickle")
+
+# Save model and label encoder
+model.save(MODEL_PATH)
+with open(ENCODER_PATH, "wb") as f:
     pickle.dump(label_encoder, f)
-print("\n✅ Model training complete and saved!")
+
+print(f"\n✅ Model training complete and saved to:\n   🧠 Model: {MODEL_PATH}\n   🏷️ Label Encoder: {ENCODER_PATH}")
+
 
 # -----------------------------
 # EVALUATE PERFORMANCE
