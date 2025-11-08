@@ -25,7 +25,7 @@ LIVE_PLOT = True
 SHOW_LANDMARKS = True
 SHOW_ALL_LANDMARKS = True
 SHOW_DURING_TRAIN = False
-EPOCHS = 50
+EPOCHS = 60
 BATCH_SIZE = 8
 
 # -----------------------------

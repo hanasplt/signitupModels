@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 # CONFIGURATION
 # -----------------------------
 DATA_DIR = './data_videos'          # Base folder containing gesture folders
-GESTURE_FOLDER = 'NOGESTURE'                # 👈 Folder name to process
+GESTURE_FOLDER = 'J'                # 👈 Folder name to process
 OUTPUT_DIR = './processed_data'     # 👈 Folder where output .p file will be saved
 SEQUENCE_LENGTH = 50
 MOTION_THRESHOLD = 0.001

@@ -7,7 +7,7 @@ import time
 # -------------------------------
 # Load your dataset
 # -------------------------------
-DATA_PATH = "./processed_data/nogesture_data.p"
+DATA_PATH = "./processed_data/j_data.p"
 print(f"📂 Loading dataset from: {DATA_PATH}")
 
 with open(DATA_PATH, "rb") as f:
