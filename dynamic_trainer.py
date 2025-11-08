@@ -31,7 +31,7 @@ BATCH_SIZE = 8
 # -----------------------------
 # PATH SETTINGS
 # -----------------------------
-GESTURE_FILE = './processed_data/z_data.p'       # 👈 Your main gesture
+GESTURE_FILE = './processed_data/hello_data.p'       # 👈 Your main gesture
 NO_GESTURE_FILE = './processed_data/nogesture_data.p'  # 👈 The “no gesture” dataset
 
 BASE_SAVE_DIR = './trained_models'

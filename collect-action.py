@@ -6,8 +6,8 @@ import time
 DATA_DIR = './data_videos'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-GESTURE_CLASSES = ['NOGESTURE']
-VIDEOS_PER_CLASS = 15
+GESTURE_CLASSES = ['YES']
+VIDEOS_PER_CLASS = 10
 VIDEO_DURATION = 4  # seconds per video
 FPS = 30
 
@@ -43,7 +43,14 @@ for gesture in GESTURE_CLASSES:
     os.makedirs(gesture_dir, exist_ok=True)
     print(f"\nCollecting videos for gesture '{gesture}'")
 
+    # Find existing videos to prevent overwriting
+    existing = [f for f in os.listdir(gesture_dir) if f.endswith('.avi')]
+    starting_index = len(existing)   # continue numbering
+    print(f"Found {starting_index} existing videos. New videos start at index {starting_index}.")
+
     for vid_num in range(VIDEOS_PER_CLASS):
+        true_index = starting_index + vid_num  # real filename index
+
         print(f"\nPreparing to record video {vid_num+1}/{VIDEOS_PER_CLASS}")
 
         # Countdown
@@ -55,8 +62,8 @@ for gesture in GESTURE_CLASSES:
             cv2.imshow("Camera Feed", frame)
             cv2.waitKey(1000)
 
-        # Setup video writer
-        filename = os.path.join(gesture_dir, f"{gesture}_{vid_num}.avi")
+        # Setup video writer (NO OVERWRITE)
+        filename = os.path.join(gesture_dir, f"{gesture}_{true_index}.avi")
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
         frame_width = int(cap.get(3))
         frame_height = int(cap.get(4))
