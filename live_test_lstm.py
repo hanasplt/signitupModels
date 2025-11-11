@@ -68,7 +68,7 @@ hands = mp_hands.Hands(max_num_hands=1)
 SEQ_LEN = 50
 
 BASE_MOTION_NOISE = 0.0025
-motion_threshold = BASE_MOTION_NOISE * 1.0
+motion_threshold = BASE_MOTION_NOISE * 0.9
 
 NO_MOTION_REQUIRED = 10
 COOLDOWN_FRAMES = 10
@@ -128,7 +128,7 @@ while True:
         # Auto adjust threshold first seconds
         if time.time() < 6:
             BASE_MOTION_NOISE = (BASE_MOTION_NOISE * 0.9) + (motion * 0.1)
-            motion_threshold = BASE_MOTION_NOISE * 3.5
+            motion_threshold = BASE_MOTION_NOISE * 1.0
 
         prev_landmarks = lm_flat
 
@@ -185,7 +185,7 @@ while True:
 
             conf_history.append(best_conf)
 
-            if best_conf < 0.6:
+            if best_conf < 0.9:
                 stable_prediction = "No gesture"
             else:
                 stable_prediction = best_pred
