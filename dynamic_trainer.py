@@ -1,136 +1,113 @@
 # =========================================================
-# dynamic_trainer.py — Train an LSTM model for dynamic gesture vs no-gesture
+# dynamic_trainer.py — Train an LSTM model for dynamic gestures
 # =========================================================
-# This script loads a pickled dataset of a specific gesture and a 'no gesture' class,
-# normalizes the data, visualizes samples, trains an LSTM model, and saves it.
+# This script loads a pickled dataset of gesture sequences,
+# cleans and normalizes the data, visualizes sample hand landmarks,
+# trains an LSTM model for temporal gesture recognition,
+# and saves the trained model + label encoder.
 # =========================================================
 
-# ---------------------------------------------------------
-# 1. Import every library we will need later
-# ---------------------------------------------------------
-import os                           # Lets us talk to the operating-system (paths, folders, etc.)
-import pickle                       # Lets us load / save Python objects to disk very quickly
-import numpy as np                  # Fast math on arrays (the heart of ML data)
-import tensorflow as tf             # Google’s deep-learning framework (Keras sits on top)
-from sklearn.preprocessing import LabelEncoder        # Turns string labels → integers 0,1,2…
-from sklearn.model_selection import train_test_split  # Keeps training / testing sets similar
-from sklearn.utils.class_weight import compute_class_weight  # Fixes class-imbalance (more ‘no-gesture’ than ‘j’)
-from sklearn.metrics import confusion_matrix, classification_report  # Pretty print of results
-from tensorflow.keras.models import Sequential        # Keras “stack-of-layers” API
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization  # The actual layers
-from tensorflow.keras.utils import to_categorical     # Turns integers 0,1 → one-hot vectors [1,0],[0,1]
-import matplotlib.pyplot as plt     # Draw graphs, confusion matrix, live training curves, etc.
+import os
+import pickle
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import confusion_matrix, classification_report
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+from tensorflow.keras.utils import to_categorical
+import matplotlib.pyplot as plt
 
-# ---------------------------------------------------------
-# 2. Tunable knobs you might want to change quickly
-# ---------------------------------------------------------
-LIVE_PLOT = True                    # If True → pop-up window updates while training
-SHOW_LANDMARKS = True               # If True → pop-up window shows skeleton animation before training
-SHOW_ALL_LANDMARKS = True           # (unused flag – kept for compatibility)
-SHOW_DURING_TRAIN = False           # (unused flag – kept for compatibility)
-EPOCHS = 50                         # How many times we look at the entire training set
-BATCH_SIZE = 8                      # How many videos we feed GPU at once
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+LIVE_PLOT = True               # Toggle real-time training plot (accuracy/loss)
+SHOW_LANDMARKS = True          # Whether to show sample hand gestures visually
+SHOW_ALL_LANDMARKS = True      # Show all gesture samples or just random ones
+SHOW_DURING_TRAIN = False      # Whether to display sample gestures during training
+EPOCHS = 60                    # Total training epochs
+BATCH_SIZE = 8                 # Mini-batch size for each training iteration
 
-# ---------------------------------------------------------
-# 3. Where are the data files and where will we save results?
-# ---------------------------------------------------------
-GESTURE_FILE = './processed_data/j_data.p'              # 👈 your positive-class pickle
-NO_GESTURE_FILE = './processed_data/nogesture_data.p'   # 👈 your negative-class pickle
+# Fix random seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
 
-BASE_SAVE_DIR = './trained_models'                      # Top folder for all experiments
-gesture_name = os.path.splitext(os.path.basename(GESTURE_FILE))[0].replace('_data', '').upper()  # Extract 'J' from j_data.p
-SAVE_DIR = os.path.join(BASE_SAVE_DIR, f"{gesture_name}_vs_NOGESTURE_model")  # e.g. ./trained_models/J_vs_NOGESTURE_model
-os.makedirs(SAVE_DIR, exist_ok=True)                    # Create that folder if it does not exist
+# -----------------------------
+# LOAD DATASET
+# -----------------------------
+# The pickle file contains a dictionary with:
+#   data  -> list of gesture sequences (each = list of frames)
+#   labels -> list of corresponding gesture names
+with open('./processed_data/dynamic_gestures_data.p', 'rb') as f:
+    data_dict = pickle.load(f)
 
-print(f"📁 Models and encoder will be saved to: {SAVE_DIR}")  # Human feedback
+X_raw = np.array(data_dict['data'], dtype=object)
+y_raw = np.array(data_dict['labels'])
+print(f"✅ Loaded dataset: {len(X_raw)} samples")
 
-# ---------------------------------------------------------
-# 4. Helper: load a pickle that has {'data':[…], 'labels':[…]}
-# ---------------------------------------------------------
-def load_pickle(file_path):
-    with open(file_path, 'rb') as f:        # Open file in binary-read mode
-        data_dict = pickle.load(f)          # Deserialize the whole dict
-    return np.array(data_dict['data'], dtype=object), np.array(data_dict['labels'])  # Return two numpy arrays
-
-# ---------------------------------------------------------
-# 5. Actually load the two pickles
-# ---------------------------------------------------------
-X_gesture, y_gesture = load_pickle(GESTURE_FILE)  # Videos of letter ‘J’
-X_no, y_no = load_pickle(NO_GESTURE_FILE)         # Videos of “nothing”
-
-print(f"✅ Loaded gesture samples: {len(X_gesture)}")  # Quick sanity check
-print(f"✅ Loaded no-gesture samples: {len(X_no)}")
-
-# ---------------------------------------------------------
-# 6. Stick the two lists together into one big list
-# ---------------------------------------------------------
-X_raw = np.concatenate([X_gesture, X_no], axis=0)  # Stack video lists vertically
-y_raw = np.concatenate([y_gesture, y_no], axis=0)  # Stack label lists vertically
-
-print(f"📦 Total combined samples: {len(X_raw)}")
-
-# ---------------------------------------------------------
-# 7. Throw away videos that do not have exactly 50 frames × 42 numbers
-# ---------------------------------------------------------
-unique_shapes = set([np.array(x).shape for x in X_raw])  # Collect every shape we see
+# Check what shapes the gesture sequences have
+unique_shapes = set([np.array(x).shape for x in X_raw])
 print(f"🔍 Found shapes in dataset: {unique_shapes}")
 
-EXPECTED_SHAPE = (50, 42)          # (frames, features) – adjust if you changed Mediapipe settings
+# Each gesture sequence is expected to have a consistent frame count and landmark count
+# Example: (50 frames, 42 landmarks) = 21 hand points × 2 (x, y)
+EXPECTED_SHAPE = (50, 42)  # 👈 Adjust this if your dataset differs
 
-X, y = [], []                      # Clean lists we will actually use
-for seq, label in zip(X_raw, y_raw):  # Walk through every video+label
-    seq = np.array(seq)               # Ensure it is numpy array
-    if seq.shape == EXPECTED_SHAPE:   # Keep only perfect rectangles
+# Clean inconsistent samples (only keep gestures matching EXPECTED_SHAPE)
+X, y = [], []
+for seq, label in zip(X_raw, y_raw):
+    seq = np.array(seq)
+    if seq.shape == EXPECTED_SHAPE:
         X.append(seq)
         y.append(label)
-    else:                             # Otherwise complain and skip
+    else:
         print(f"⚠️ Skipping inconsistent sample with shape {seq.shape}")
 
-X = np.array(X, dtype=np.float32)  # Convert list → 3-D float32 array
-y = np.array(y)                    # Convert list → 1-D string array
+X = np.array(X, dtype=np.float32)
+y = np.array(y)
 print(f"✅ Kept {len(X)} valid samples")
 
-if len(X) == 0:                    # Crash early if nothing survived
-    raise ValueError("❌ No valid samples found. Adjust EXPECTED_SHAPE if needed.")
+# Safety check — stop if no valid samples found
+if len(X) == 0:
+    raise ValueError("❌ No valid samples found. Adjust EXPECTED_SHAPE to match dataset structure.")
 
-# ---------------------------------------------------------
-# 8. Min-max normalise every video individually (0-1 range)
-# ---------------------------------------------------------
-X_min = X.min(axis=(1, 2), keepdims=True)  # Smallest number inside that video
-X_max = X.max(axis=(1, 2), keepdims=True)  # Largest number inside that video
-X = (X - X_min) / (X_max - X_min + 1e-6)   # Scale 0-1, avoid divide-by-zero
+# Normalize each sequence between 0–1
+# This helps the model learn better since input values are standardized
+X_min = X.min(axis=(1, 2), keepdims=True)
+X_max = X.max(axis=(1, 2), keepdims=True)
+X = (X - X_min) / (X_max - X_min + 1e-6)
 
-# ---------------------------------------------------------
-# 9. Convert string labels → integers → one-hot vectors
-# ---------------------------------------------------------
-label_encoder = LabelEncoder()              # Instantiate scikit-learn helper
-y_encoded = label_encoder.fit_transform(y)  # ['J','J','NoGesture'] → [0,0,1]
-y_categorical = to_categorical(y_encoded)   # [0,0,1] → [[1,0],[1,0],[0,1]]
+# Encode text labels (e.g., "J", "Z") → numerical values
+label_encoder = LabelEncoder()
+y_encoded = label_encoder.fit_transform(y)
+y_categorical = to_categorical(y_encoded)
 
-print(f"🎯 Classes: {list(label_encoder.classes_)}")  # Show mapping
+print(f"🎯 Classes: {list(label_encoder.classes_)}")
 
-# ---------------------------------------------------------
-# 10. Split into training (80 %) and testing (20 %)
-# ---------------------------------------------------------
+# -----------------------------
+# TRAIN / TEST SPLIT
+# -----------------------------
+# Split dataset into training (80%) and testing (20%)
 X_train, X_test, y_train, y_test = train_test_split(
     X, y_categorical, test_size=0.2, random_state=42, stratify=y_categorical
 )
 print(f"📊 Training samples: {X_train.shape[0]} | Testing samples: {X_test.shape[0]}")
 
-# ---------------------------------------------------------
-# 11. Compute class weights so the network cares equally about ‘J’ and ‘no-gesture’
-# ---------------------------------------------------------
+# Compute class weights to handle class imbalance (if some gestures have fewer samples)
 class_weights = compute_class_weight(
     class_weight='balanced',
     classes=np.unique(y_encoded),
     y=y_encoded
 )
-class_weights = dict(enumerate(class_weights))  # Keras wants a dict {class_id : weight}
+class_weights = dict(enumerate(class_weights))
 print("⚖️ Class weights:", class_weights)
 
-# ---------------------------------------------------------
-# 12. Definition of 21 hand-bone edges (Mediapipe topology)
-# ---------------------------------------------------------
+# -----------------------------
+# HAND LANDMARK VISUALIZATION
+# -----------------------------
+# Used to visualize gesture sequences by connecting hand keypoints
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -140,77 +117,81 @@ HAND_CONNECTIONS = [
     (0, 17)
 ]
 
-# ---------------------------------------------------------
-# 13. Function: animate one video so humans see what the network sees
-# ---------------------------------------------------------
 def show_landmark_sequence(sequence, label, delay=100):
-    plt.figure()                                    # Create new window
-    for frame in sequence:                          # Walk through 50 frames
-        plt.clf()                                   # Clear previous drawing
-        xs = frame[::2]                             # Even indices → x coordinates
-        ys = 1 - np.array(frame[1::2])              # Odd indices → y coordinates (flip y so hand is upright)
-        for a, b in HAND_CONNECTIONS:               # Draw bone lines
+    """Displays a single gesture sequence frame-by-frame."""
+    plt.figure()
+    for frame in sequence:
+        plt.clf()
+        xs = frame[::2]
+        ys = 1 - np.array(frame[1::2])  # Flip vertically for better view
+        # Draw the hand skeleton
+        for a, b in HAND_CONNECTIONS:
             plt.plot([xs[a], xs[b]], [ys[a], ys[b]], 'gray', linewidth=1)
-        plt.scatter(xs, ys, c='blue', s=30)         # Draw joints
-        plt.title(f"Gesture: {label}")              # Show label on top
-        plt.xlim(0, 1)                              # Keep same scale
+        plt.scatter(xs, ys, c='blue', s=30)
+        plt.title(f"Gesture: {label}")
+        plt.xlim(0, 1)
         plt.ylim(0, 1)
-        plt.axis('off')                             # Remove axes
-        plt.pause(0.05)                             # Short pause → animation effect
-    plt.show(block=False)                           # Leave window open
-    plt.pause(delay / 1000)                         # Wait a bit before closing
+        plt.axis('off')
+        plt.pause(0.05)
+    plt.show(block=False)
+    plt.pause(delay / 1000)
     plt.close()
 
-# ---------------------------------------------------------
-# 14. If user wants, quickly visualise one example per class
-# ---------------------------------------------------------
+# Show a few gesture samples before training (for confirmation)
 if SHOW_LANDMARKS:
     print("\n🎥 Displaying gesture samples...")
-    labels_to_show = np.unique(y)                   # Usually ['J', 'NoGesture']
-    for lbl in labels_to_show:                      # One movie per class
-        idx = np.where(y == lbl)[0][0]              # Grab first sample of that class
-        show_landmark_sequence(X[idx], lbl)         # Play the mini-movie
+    if SHOW_ALL_LANDMARKS:
+        for lbl in np.unique(y):
+            idx = np.where(y == lbl)[0][0]
+            show_landmark_sequence(X[idx], lbl)
+    else:
+        sample_indices = np.random.choice(len(X), 3, replace=False)
+        for idx in sample_indices:
+            show_landmark_sequence(X[idx], y[idx])
 
-# ---------------------------------------------------------
-# 15. Build the neural network (two LSTM layers + dense head)
-# ---------------------------------------------------------
-model = Sequential([                                # Empty stack-of-layers
-    LSTM(128, return_sequences=True, input_shape=EXPECTED_SHAPE),  # First LSTM spits whole sequence
-    BatchNormalization(),                           # Normalise activations → faster training
-    Dropout(0.4),                                   # Randomly ignore 40 % neurons → reduce over-fit
-    LSTM(64, return_sequences=False),               # Second LSTM spits only last hidden state
+# -----------------------------
+# DEFINE MODEL (LSTM)
+# -----------------------------
+# LSTM (Long Short-Term Memory) is ideal for dynamic gestures
+# because it learns patterns across time (i.e., movement sequences)
+model = Sequential([
+    LSTM(128, return_sequences=True, input_shape=EXPECTED_SHAPE),
     BatchNormalization(),
     Dropout(0.4),
-    Dense(64, activation='relu'),                   # Normal fully-connected layer
+    LSTM(64, return_sequences=False),
+    BatchNormalization(),
+    Dropout(0.4),
+    Dense(64, activation='relu'),
     Dropout(0.3),
-    Dense(len(np.unique(y)), activation='softmax')  # Output layer: probabilities that sum to 1
+    Dense(len(np.unique(y)), activation='softmax')  # Output layer for class probabilities
 ])
 
-model.compile(optimizer='adam',                     # Kingma & Ba optimiser
-              loss='categorical_crossentropy',      # Suitable for one-hot labels
-              metrics=['accuracy'])                 # We want to see accuracy in console
-model.summary()                                     # Print parameter count
+# Compile model with Adam optimizer and categorical cross-entropy loss
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.summary()
 
-# ---------------------------------------------------------
-# 16. Custom callback: update a live matplotlib window while training
-# ---------------------------------------------------------
+# -----------------------------
+# LIVE TRAINING VISUALIZATION
+# -----------------------------
 class LivePlotCallback(tf.keras.callbacks.Callback):
+    """Custom callback to show real-time accuracy/loss plots during training."""
     def on_train_begin(self, logs=None):
-        if not LIVE_PLOT:                           # Skip if user turned flag off
+        if not LIVE_PLOT:
             return
-        self.fig, self.axs = plt.subplots(1, 2, figsize=(10, 4))  # Two sub-plots: acc & loss
-        plt.ion()                                   # Interactive mode on
+        self.fig, self.axs = plt.subplots(1, 2, figsize=(10, 4))
+        plt.ion()
         self.train_acc, self.val_acc, self.train_loss, self.val_loss = [], [], [], []
 
     def on_epoch_end(self, epoch, logs=None):
         if LIVE_PLOT:
-            self.train_acc.append(logs['accuracy'])         # Record this epoch
+            self.train_acc.append(logs['accuracy'])
             self.val_acc.append(logs['val_accuracy'])
             self.train_loss.append(logs['loss'])
             self.val_loss.append(logs['val_loss'])
 
-            self.axs[0].cla()                               # Clear left plot
-            self.axs[1].cla()                               # Clear right plot
+            # Update plots each epoch
+            self.axs[0].cla()
+            self.axs[1].cla()
             self.axs[0].plot(self.train_acc, label='Train Acc', color='blue')
             self.axs[0].plot(self.val_acc, label='Val Acc', color='orange')
             self.axs[0].set_title('Accuracy')
@@ -221,56 +202,71 @@ class LivePlotCallback(tf.keras.callbacks.Callback):
             self.axs[1].set_title('Loss')
             self.axs[1].legend()
 
-            plt.suptitle(f"Epoch {epoch+1}/{EPOCHS}")       # Update title
-            plt.pause(0.1)                                  # Refresh window
+            plt.suptitle(f"Epoch {epoch+1}/{EPOCHS}")
+            plt.pause(0.1)
+
+        # Optionally show sample gestures every 10 epochs
+        if SHOW_DURING_TRAIN and (epoch % 10 == 0):
+            idx = np.random.randint(0, len(X_train))
+            label_name = label_encoder.inverse_transform([np.argmax(y_train[idx])])[0]
+            show_landmark_sequence(X_train[idx], label_name)
 
     def on_train_end(self, logs=None):
         if LIVE_PLOT:
-            plt.ioff()                                      # Leave window open when finished
+            plt.ioff()
             plt.show()
 
-# ---------------------------------------------------------
-# 17. Finally press the big green button: TRAIN
-# ---------------------------------------------------------
+# -----------------------------
+# TRAIN MODEL
+# -----------------------------
 history = model.fit(
-    X_train, y_train,                           # Feed training data
-    epochs=EPOCHS,                              # Repeat N times
-    batch_size=BATCH_SIZE,                      # Mini-batch size
-    validation_data=(X_test, y_test),           # Evaluate on held-out set every epoch
-    class_weight=class_weights,                 # Give extra love to minority class
-    callbacks=[LivePlotCallback()],             # Our live plotting
-    verbose=1                                   # Print one line per epoch
+    X_train, y_train,
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    validation_data=(X_test, y_test),
+    class_weight=class_weights,
+    callbacks=[LivePlotCallback()],
+    verbose=1
 )
 
-# ---------------------------------------------------------
-# 18. Save the trained brain to disk so we can load it later inside the real-time demo
-# ---------------------------------------------------------
-MODEL_PATH = os.path.join(SAVE_DIR, f'{gesture_name.lower()}_vs_no_gesture_lstm_model.h5')
-ENCODER_PATH = os.path.join(SAVE_DIR, f'{gesture_name.lower()}_vs_no_gesture_label_encoder.pickle')
+# -----------------------------
+# SAVE MODEL & LABEL ENCODER
+# -----------------------------
+# Folder where model + encoder will be saved
+SAVE_DIR = "./trained_models"   # 👈 Change this path to wherever you want
+os.makedirs(SAVE_DIR, exist_ok=True)
 
-model.save(MODEL_PATH)                              # Keras HDF5 format: architecture + weights
-with open(ENCODER_PATH, 'wb') as f:                 # Also save the mapping 0→'J', 1→'NoGesture'
+# Define full file paths
+MODEL_PATH = os.path.join(SAVE_DIR, "gesture_lstm_model.h5")
+ENCODER_PATH = os.path.join(SAVE_DIR, "label_encoder.pickle")
+
+# Save model and label encoder
+model.save(MODEL_PATH)
+with open(ENCODER_PATH, "wb") as f:
     pickle.dump(label_encoder, f)
 
-print(f"\n✅ Model and encoder saved to:\n  - {MODEL_PATH}\n  - {ENCODER_PATH}")
+print(f"\n✅ Model training complete and saved to:\n   🧠 Model: {MODEL_PATH}\n   🏷️ Label Encoder: {ENCODER_PATH}")
 
-# ---------------------------------------------------------
-# 19. Compute final numbers: precision, recall, F1, confusion matrix
-# ---------------------------------------------------------
-y_pred = model.predict(X_test)              # Soft probabilities shape (N, 2)
-y_pred_labels = np.argmax(y_pred, axis=1)   # Highest probability → class index
-y_true_labels = np.argmax(y_test, axis=1)   # Same for ground-truth
 
-print("\n📊 Classification Report:")        # Nicely formatted table
+# -----------------------------
+# EVALUATE PERFORMANCE
+# -----------------------------
+# Predict on test set and show accuracy, precision, recall, and F1-score
+y_pred = model.predict(X_test)
+y_pred_labels = np.argmax(y_pred, axis=1)
+y_true_labels = np.argmax(y_test, axis=1)
+
+print("\n📊 Classification Report:")
 print(classification_report(y_true_labels, y_pred_labels, target_names=label_encoder.classes_))
 
-cm = confusion_matrix(y_true_labels, y_pred_labels)  # 2×2 matrix
+# Plot confusion matrix to visualize which gestures are confused with others
+cm = confusion_matrix(y_true_labels, y_pred_labels)
 plt.figure(figsize=(6, 5))
-plt.imshow(cm, cmap='Blues')                # Draw heat-map
+plt.imshow(cm, cmap='Blues')
 plt.title("Confusion Matrix")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.xticks(range(len(label_encoder.classes_)), label_encoder.classes_, rotation=45)
 plt.yticks(range(len(label_encoder.classes_)), label_encoder.classes_)
 plt.colorbar()
-plt.show()                                  # Block until user closes window
+plt.show()

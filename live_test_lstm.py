@@ -14,21 +14,9 @@ import os
 MODEL_DIR = "./trained_models"
 
 model_paths = {
-    "HELLO": {
-        "model": f"{MODEL_DIR}/HELLO_vs_NOGESTURE_model/hello_vs_no_gesture_lstm_model.h5",
-        "label": f"{MODEL_DIR}/HELLO_vs_NOGESTURE_model/hello_vs_no_gesture_label_encoder.pickle"
-    },
-    "J": {
-        "model": f"{MODEL_DIR}/J_vs_NOGESTURE_model/j_vs_no_gesture_lstm_model.h5",
-        "label": f"{MODEL_DIR}/J_vs_NOGESTURE_model/j_vs_no_gesture_label_encoder.pickle"
-    },
-    "YES": {
-        "model": f"{MODEL_DIR}/YES_vs_NOGESTURE_model/yes_vs_no_gesture_lstm_model.h5",
-        "label": f"{MODEL_DIR}/YES_vs_NOGESTURE_model/yes_vs_no_gesture_label_encoder.pickle"
-    },
-    "Z": {
-        "model": f"{MODEL_DIR}/Z_vs_NOGESTURE_model/z_vs_no_gesture_lstm_model.h5",
-        "label": f"{MODEL_DIR}/Z_vs_NOGESTURE_model/z_vs_no_gesture_label_encoder.pickle"
+    "EVERYTHING": {
+        "model": f"{MODEL_DIR}/DYNAMICS/gesture_lstm_model.h5",
+        "label": f"{MODEL_DIR}/DYNAMICS/label_encoder.pickle"
     }
 }
 
