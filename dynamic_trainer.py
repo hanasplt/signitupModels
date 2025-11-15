@@ -27,8 +27,8 @@ LIVE_PLOT = True               # Toggle real-time training plot (accuracy/loss)
 SHOW_LANDMARKS = True          # Whether to show sample hand gestures visually
 SHOW_ALL_LANDMARKS = True      # Show all gesture samples or just random ones
 SHOW_DURING_TRAIN = False      # Whether to display sample gestures during training
-EPOCHS = 60                    # Total training epochs
-BATCH_SIZE = 8                 # Mini-batch size for each training iteration
+EPOCHS = 100                    # Total training epochs
+BATCH_SIZE = 10                 # Mini-batch size for each training iteration
 
 # Fix random seeds for reproducibility
 np.random.seed(42)
@@ -240,12 +240,22 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 MODEL_PATH = os.path.join(SAVE_DIR, "gesture_lstm_model.h5")
 ENCODER_PATH = os.path.join(SAVE_DIR, "label_encoder.pickle")
 
-# Save model and label encoder
+# 1) Keras H5 (already done)
 model.save(MODEL_PATH)
+
+# 2) TensorFlow SavedModel (folder)
+SAVEDMODEL_DIR = os.path.join(SAVE_DIR, "gesture_lstm_savedmodel")
+tf.saved_model.save(model, SAVEDMODEL_DIR)
+
+# 3) Label encoder (unchanged)
 with open(ENCODER_PATH, "wb") as f:
     pickle.dump(label_encoder, f)
 
 print(f"\n✅ Model training complete and saved to:\n   🧠 Model: {MODEL_PATH}\n   🏷️ Label Encoder: {ENCODER_PATH}")
+
+import tensorflowjs as tfjs
+tfjs.converters.save_keras_model(model, "./gesture_lstm_tfjs")
+print("✅ Model converted to TensorFlow.js – folder: ./gesture_lstm_tfjs")
 
 
 # -----------------------------

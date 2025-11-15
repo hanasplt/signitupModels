@@ -15,8 +15,8 @@ MODEL_DIR = "./trained_models"
 
 model_paths = {
     "EVERYTHING": {
-        "model": f"{MODEL_DIR}/DYNAMICS/gesture_lstm_model.h5",
-        "label": f"{MODEL_DIR}/DYNAMICS/label_encoder.pickle"
+        "model": f"{MODEL_DIR}/gesture_lstm_model.h5",
+        "label": f"{MODEL_DIR}/label_encoder.pickle"
     }
 }
 
@@ -56,7 +56,7 @@ hands = mp_hands.Hands(max_num_hands=1)
 SEQ_LEN = 50
 
 BASE_MOTION_NOISE = 0.0025
-motion_threshold = BASE_MOTION_NOISE * 0.9
+motion_threshold = BASE_MOTION_NOISE * 1.0
 
 NO_MOTION_REQUIRED = 10
 COOLDOWN_FRAMES = 10

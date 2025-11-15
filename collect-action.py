@@ -6,9 +6,9 @@ import time
 DATA_DIR = './data_videos'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-GESTURE_CLASSES = ['10']  # Add more gesture names as needed
-VIDEOS_PER_CLASS = 36
-VIDEO_DURATION = 3  # seconds per video
+GESTURE_CLASSES = ['11']  # Add more gesture names as needed
+VIDEOS_PER_CLASS = 5
+VIDEO_DURATION = 2  # seconds per video
 FPS = 30
 
 cap = cv2.VideoCapture(0)

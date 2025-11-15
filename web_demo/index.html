@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PyTorch-LSTM Gesture Recognition (ONNX.js)</title>
+  <style>
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#111;color:#0f0;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}
+    h2{margin-bottom:.2em}
+    video{transform:scaleX(-1);border:2px solid #0f0;border-radius:6px}
+    #pred{font-size:3em;margin-top:.3em;font-weight:bold}
+    small{color:#888;margin-top:.5em}
+  </style>
+</head>
+<body>
+  <h2>PyTorch-LSTM Gesture Recognition</h2>
+  <video id="cam" autoplay playsinline></video>
+  <div id="pred">Loading model…</div>
+  <small>Allow webcam access &nbsp; | &nbsp; 50-frame buffer</small>
+
+  <!-- external libs -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.3/control_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+
+  <!-- =====  ALL JAVASCRIPT IN ONE PLACE  ===== -->
+  <script>
+    /************  CONFIG  ************/
+    const LABELS = [               // ← same order as in Python label-encoder
+      '10', '11', 'HELLO', 'J', 'YES', 'Z'
+    ];
+    const FRAME_SIZE = 50;   // time-steps
+    const VECTOR_LEN = 42;   // 21 landmarks × 2 (x,y)
+    let sess = null;
+    const buffer = [];
+
+    /************  LOAD ONNX  ************/
+    async function loadModel() {
+      sess = await ort.InferenceSession.create("./gesture_lstm.onnx"); // ort, not onnx
+      console.log("✅ ONNX-Runtime Web ready");
+      document.getElementById("pred").innerText = "Make a gesture";
+    }
+
+    /************  MEDIAPIPE HAND  ************/
+    const hands = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+    });
+    hands.setOptions({maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7});
+
+    async function initCam() {
+      const camera = new Camera(document.getElementById("cam"), {
+        onFrame: async () => await hands.send({image: document.getElementById("cam")}),
+        width: 640, height: 480
+      });
+      await camera.start();
+    }
+
+    hands.onResults(onResults);
+
+    function onResults(results) {
+      const vec = [];
+      if (results.multiHandLandmarks && results.multiHandLandmarks[0]) {
+        const lm = results.multiHandLandmarks[0];
+        for (let i = 0; i < 21; i++) { vec.push(lm[i].x, lm[i].y); }
+      } else {
+        vec.push(...new Array(VECTOR_LEN).fill(0));
+      }
+      buffer.push(vec);
+      if (buffer.length > FRAME_SIZE) buffer.shift();
+      if (buffer.length === FRAME_SIZE) predict();
+    }
+
+    /************  INFERENCE  ************/
+    async function predict() {
+      const tensor = new ort.Tensor("float32", buffer.flat(), [1, FRAME_SIZE, VECTOR_LEN]);
+      const feeds  = { seq: tensor };          // input name you exported
+      const results= await sess.run(feeds);    // returns object keyed by output name
+      const logits = results.logits.data;      // name from torch.onnx.export
+
+      let maxVal = -Infinity, maxIdx = 0;
+      for (let i = 0; i < logits.length; i++) {
+        if (logits[i] > maxVal) { maxVal = logits[i]; maxIdx = i; }
+      }
+      const prob = Math.exp(maxVal) / logits.reduce((s, v) => s + Math.exp(v), 0);
+      document.getElementById("pred").innerText =
+            `${LABELS[maxIdx]}  (${(prob * 100).toFixed(1)}%)`;
+    }
+
+    /************  START  ************/
+    (async () => {
+      await loadModel();
+      await initCam();
+    })();
+  </script>
+</body>
+</html>
