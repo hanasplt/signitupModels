@@ -6,8 +6,8 @@ import time
 DATA_DIR = './data_videos'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-GESTURE_CLASSES = ['11']  # Add more gesture names as needed
-VIDEOS_PER_CLASS = 5
+GESTURE_CLASSES = ['15']  # Add more gesture names as needed
+VIDEOS_PER_CLASS = 25
 VIDEO_DURATION = 2  # seconds per video
 FPS = 30
 

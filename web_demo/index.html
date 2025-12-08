@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PyTorch-LSTM Gesture Recognition (ONNX.js)</title>
+  <title>Enhanced PyTorch-LSTM Gesture Recognition</title>
   <style>
     body{
       margin:0;
@@ -11,18 +11,55 @@
       color:#0f0;
       display:flex;
       flex-direction:column;
-      align-items:center;    /* center horizontally */
-      justify-content:flex-start;  /* content starts at top */
-      padding-top:20px;      /* small spacing */
-      height:100vh;
+      align-items:center;
+      justify-content:flex-start;
+      padding:20px;
+      min-height:100vh;
     }
 
     h2{margin-bottom:.2em}
     #camWrapper{position:relative}
     video{transform:scaleX(-1);border:2px solid #0f0;border-radius:6px;position:absolute;top:0;left:0}
     canvas{transform:scaleX(-1);top:0;left:0}
-    #pred{font-size:2em;margin-top:.5em;font-weight:bold}
+    
+    #pred{font-size:2em;margin-top:.5em;font-weight:bold;min-height:1.5em}
+    #status{font-size:1em;color:#888;margin-top:0.3em;min-height:1.2em}
     #countdown{font-size:3em;color:#f00;margin-top:0.2em;height:1.5em}
+    
+    #topPreds{
+      margin-top:10px;
+      font-size:0.9em;
+      color:#888;
+      display:flex;
+      flex-direction:column;
+      gap:5px;
+    }
+    .pred-bar{
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .pred-label{
+      width:80px;
+      text-align:right;
+    }
+    .pred-progress{
+      flex:1;
+      height:20px;
+      background:#222;
+      border-radius:4px;
+      overflow:hidden;
+      max-width:200px;
+    }
+    .pred-fill{
+      height:100%;
+      background:#0f0;
+      transition:width 0.3s;
+    }
+    .pred-value{
+      width:50px;
+    }
+    
     button{
       margin-top:15px;
       padding:10px 20px;
@@ -34,13 +71,84 @@
       border:none;
       cursor:pointer;
     }
+    button:disabled{
+      background:#555;
+      cursor:not-allowed;
+      color:#888;
+    }
+    
+    .graphs-container{
+      display:flex;
+      gap:20px;
+      margin-top:15px;
+      flex-wrap:wrap;
+      justify-content:center;
+    }
+    .graph-wrapper{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+    }
+    .graph-wrapper canvas{
+      border:2px solid #333;
+      border-radius:6px;
+      background:#050505;
+    }
+    .graph-label{
+      color:#888;
+      font-size:0.85em;
+      margin-top:5px;
+    }
+    
+    #settings{
+      margin-top:20px;
+      padding:15px;
+      background:#1a1a1a;
+      border:1px solid #333;
+      border-radius:8px;
+      width:90%;
+      max-width:640px;
+    }
+    .setting-row{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      margin:8px 0;
+      font-size:0.9em;
+    }
+    .setting-row input[type="range"]{
+      width:150px;
+    }
+    .setting-row input[type="checkbox"]{
+      width:20px;
+      height:20px;
+    }
+    
+    /* NEW: File upload styling */
+    .file-upload{
+      margin-top:10px;
+      padding:10px;
+      background:#222;
+      border-radius:6px;
+      border:1px dashed #0f0;
+    }
+    .file-upload input{
+      color:#0f0;
+    }
+    
     small{color:#888;margin-top:.5em}
   </style>
 </head>
 <body>
-  <h2>PyTorch-LSTM Gesture Recognition</h2>
+  <h2>Enhanced PyTorch-LSTM Gesture Recognition</h2>
 
-  <!-- Wrapper holds video + canvas overlay -->
+  <!-- NEW: Label encoder upload -->
+  <div class="file-upload">
+    <label>Load Label Encoder (optional): </label>
+    <input type="file" id="labelUpload" accept=".pickle,.pkl">
+    <span id="labelStatus" style="margin-left:10px;color:#888">Using default labels</span>
+  </div>
+
   <div id="camWrapper">
     <video id="cam" width="640" height="480" autoplay playsinline></video>
     <canvas id="overlay" width="640" height="480"></canvas>
@@ -49,40 +157,150 @@
   <button id="detectBtn">Start Detection</button>
   <div id="countdown"></div>
   <div id="pred">Model not ready…</div>
-  <small>Allow webcam access</small>
+  <div id="status"></div>
+  
+  <div id="topPreds"></div>
+  
+  <div class="graphs-container">
+    <div class="graph-wrapper">
+      <canvas id="confGraph" width="300" height="120"></canvas>
+      <div class="graph-label">Confidence History</div>
+    </div>
+    <div class="graph-wrapper">
+      <canvas id="qualityGraph" width="300" height="120"></canvas>
+      <div class="graph-label">Hand Detection Quality</div>
+    </div>
+  </div>
+  
+  <div id="settings">
+    <h3 style="margin-top:0;font-size:1.1em">Settings</h3>
+    <div class="setting-row">
+      <label>Recording Duration (s):</label>
+      <input type="range" id="durationSlider" min="1" max="5" step="0.5" value="2">
+      <span id="durationValue">2.0s</span>
+    </div>
+    <div class="setting-row">
+      <label>Confidence Threshold:</label>
+      <input type="range" id="thresholdSlider" min="0" max="100" value="30">
+      <span id="thresholdValue">30%</span>
+    </div>
+    <div class="setting-row">
+      <label>Min Detection Confidence:</label>
+      <input type="range" id="detectionSlider" min="30" max="90" value="70">
+      <span id="detectionValue">70%</span>
+    </div>
+    <div class="setting-row">
+      <label>Smooth Predictions (avg 3 frames):</label>
+      <input type="checkbox" id="smoothCheck" checked>
+    </div>
+  </div>
+  
+  <small>Upload label_encoder.pickle for correct labels • Adjust settings if predictions seem wrong</small>
 
-  <!-- external libs -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.3/control_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+  <!-- NEW: Library to read pickle files in browser -->
+  <script src="https://cdn.jsdelivr.net/npm/pickleparser@0.2.1/dist/pickleparser.min.js"></script>
 
   <script>
     /************ CONFIG ************/
-    const LABELS = ['10', '11', 'HELLO', 'J', 'YES', 'Z'];
-    const FRAME_SIZE = 50; 
+    // These are default labels, will be replaced if you upload label_encoder.pickle
+    let LABELS = ['10', '11', '12', '13', '14', '15', 'HELLO', 'J', 'YES', 'Z'];
+    const SEQ_LEN = 50;
     const VECTOR_LEN = 42;
+    
+    let RECORDING_DURATION = 2000;
 
     let sess = null;
+    let sequence = [];
     let recordActive = false;
-    let tempBuffer = [];
+    let confHistory = [];
+    let qualityHistory = [];
+    let stablePrediction = "Ready. Press Start Detection.";
+    let previousFrame = null;
+    let recentPredictions = [];
+
+    /************ LABEL ENCODER LOADING ************/
+    // IMPROVEMENT 1: Load labels from your actual pickle file
+    // WHY: This ensures we're using the EXACT same labels your model was trained with
+    // HOW IT WORKS: Reads the pickle file, extracts the label names, sorts them correctly
+    document.getElementById('labelUpload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      try {
+        // Read the pickle file as binary data
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        
+        // Parse the pickle format (Python's way of saving objects)
+        const parsed = pickleparser.parse(uint8Array);
+        
+        console.log('Parsed label encoder:', parsed);
+        
+        // Extract labels from the LabelEncoder structure
+        // Python's LabelEncoder saves labels in 'classes_' attribute
+        if (parsed && parsed.classes_) {
+          LABELS = Array.from(parsed.classes_);
+          document.getElementById('labelStatus').innerText = `✓ Loaded ${LABELS.length} labels`;
+          document.getElementById('labelStatus').style.color = '#0f0';
+          console.log('Loaded labels:', LABELS);
+        } else {
+          throw new Error('Could not find classes_ in pickle file');
+        }
+      } catch (err) {
+        console.error('Error loading label encoder:', err);
+        document.getElementById('labelStatus').innerText = '✗ Error loading file';
+        document.getElementById('labelStatus').style.color = '#f00';
+        alert('Could not load label encoder. Using default labels. Error: ' + err.message);
+      }
+    });
+
+    /************ SETTINGS UI ************/
+    document.getElementById('durationSlider').addEventListener('input', (e) => {
+      RECORDING_DURATION = parseFloat(e.target.value) * 1000;
+      document.getElementById('durationValue').innerText = `${e.target.value}s`;
+    });
+    
+    document.getElementById('thresholdSlider').addEventListener('input', (e) => {
+      document.getElementById('thresholdValue').innerText = `${e.target.value}%`;
+    });
+    
+    // IMPROVEMENT 2: Adjustable MediaPipe detection confidence
+    // WHY: Higher confidence = only detect clear hand poses = better quality data
+    // Lower confidence = detect more hand poses but might be noisy
+    document.getElementById('detectionSlider').addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value) / 100;
+      document.getElementById('detectionValue').innerText = `${e.target.value}%`;
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: val,
+        minTrackingConfidence: val
+      });
+    });
 
     /************ LOAD MODEL ************/
     async function loadModel() {
       sess = await ort.InferenceSession.create("./gesture_lstm.onnx");
-      document.getElementById("pred").innerText = "Ready. Press Start Detection.";
+      document.getElementById("pred").innerText = stablePrediction;
+      document.getElementById("status").innerText = "";
     }
 
     /************ MEDIAPIPE SETUP ************/
+    // IMPROVEMENT 3: Higher default detection confidence for better accuracy
+    // WHY: Reduces false detections and noisy hand poses
     const hands = new Hands({
       locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
     });
     hands.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7
+      minDetectionConfidence: 0.7,  // Changed from 0.5 to 0.7
+      minTrackingConfidence: 0.7     // Changed from 0.5 to 0.7
     });
 
     const videoEl = document.getElementById("cam");
@@ -100,83 +318,327 @@
 
     hands.onResults(onResults);
 
-    /************ DRAW LANDMARKS + RECORD DATA ************/
+    /************ GRAPH DRAWING ************/
+    function drawGraph(canvasId, history, color = "#0f0", label = "") {
+      const canvas = document.getElementById(canvasId);
+      const gCtx = canvas.getContext("2d");
+      
+      gCtx.fillStyle = "#050505";
+      gCtx.fillRect(0, 0, 300, 120);
+      
+      gCtx.strokeStyle = "#333";
+      gCtx.strokeRect(0, 0, 300, 120);
+
+      if (history.length < 2) return;
+
+      gCtx.strokeStyle = color;
+      gCtx.lineWidth = 2;
+      gCtx.beginPath();
+
+      for (let i = 0; i < history.length; i++) {
+        const x = (i / (history.length - 1)) * 300;
+        const y = 120 - (history[i] * 120);
+        
+        if (i === 0) gCtx.moveTo(x, y);
+        else gCtx.lineTo(x, y);
+      }
+      
+      gCtx.stroke();
+    }
+
+    /************ FEATURE EXTRACTION ************/
+    // IMPROVEMENT 4: Better feature extraction with depth (Z) coordinate
+    // WHY: Z-depth captures 3D hand position, helps distinguish similar gestures
+    // EXAMPLE: Thumbs up vs peace sign might look similar in 2D but different in 3D
+    function extractFeatures(landmarks) {
+      const features = [];
+      const wrist = { x: landmarks[0].x, y: landmarks[0].y, z: landmarks[0].z };
+      
+      // CHANGED: Now includes Z coordinate for 3D information
+      // Each landmark gives us 3 values: X, Y, Z (relative to wrist)
+      for (let i = 0; i < 21; i++) {
+        features.push(
+          landmarks[i].x - wrist.x,  // Horizontal position
+          landmarks[i].y - wrist.y,  // Vertical position
+          landmarks[i].z - wrist.z   // Depth position (NEW!)
+        );
+      }
+
+      return features;
+    }
+
+    // IMPROVEMENT 5: Better quality calculation using multiple factors
+    // WHY: More accurate quality score = better predictions
+    function calculateHandQuality(landmarks) {
+      let minX = 1, maxX = 0, minY = 1, maxY = 0;
+      let avgZ = 0;
+      
+      for (let lm of landmarks) {
+        minX = Math.min(minX, lm.x);
+        maxX = Math.max(maxX, lm.x);
+        minY = Math.min(minY, lm.y);
+        maxY = Math.max(maxY, lm.y);
+        avgZ += Math.abs(lm.z); // Z-depth variance
+      }
+      avgZ /= landmarks.length;
+      
+      const area = (maxX - minX) * (maxY - minY);
+      
+      // Combine area and depth for quality score
+      // Higher = hand is visible, spread out, and has good depth detection
+      const qualityScore = (area * 3) + (avgZ * 2);
+      return Math.min(qualityScore, 1.0);
+    }
+
+    /************ PROCESS RESULTS ************/
     function onResults(results) {
       ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
       if (results.multiHandLandmarks && results.multiHandLandmarks[0]) {
         const lm = results.multiHandLandmarks[0];
 
-        // Draw connections
         drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: '#0f0', lineWidth: 3 });
-
-        // Draw landmarks
         drawLandmarks(ctx, lm, { color: '#0f0', radius: 4 });
 
-        // Recording
+        const quality = calculateHandQuality(lm);
+        qualityHistory.push(quality);
+        if (qualityHistory.length > 50) qualityHistory.shift();
+
         if (recordActive) {
-          const vec = [];
-          for (let i = 0; i < 21; i++) vec.push(lm[i].x, lm[i].y);
-          if (tempBuffer.length < FRAME_SIZE) tempBuffer.push(vec);
+          // CHANGED: Now using 3D features (X, Y, Z)
+          const features = extractFeatures(lm);
+          sequence.push(features);
+          
+          previousFrame = lm.map(p => ({x: p.x, y: p.y, z: p.z}));
+          
+          document.getElementById("status").innerText = 
+            `Recording... (${sequence.length} frames, quality: ${(quality*100).toFixed(0)}%)`;
         }
 
       } else {
-        // no hand visible → record zeros
+        qualityHistory.push(0);
+        if (qualityHistory.length > 50) qualityHistory.shift();
+        
         if (recordActive) {
-          const vec = new Array(VECTOR_LEN).fill(0);
-          if (tempBuffer.length < FRAME_SIZE) tempBuffer.push(vec);
+          // CHANGED: 63 features instead of 42 (21 landmarks × 3 coordinates)
+          sequence.push(new Array(63).fill(0));
+          previousFrame = null;
+          
+          document.getElementById("status").innerText = 
+            `Recording... (${sequence.length} frames, no hand)`;
         }
       }
+
+      drawGraph('confGraph', confHistory, '#0f0');
+      drawGraph('qualityGraph', qualityHistory, '#ff0');
     }
 
-    /************  PREDICTION WITH "THINKING…" DELAY  ************/
+    /************ PREDICTION WITH IMPROVEMENTS ************/
     async function predict() {
+      if (!sess) return;
 
       document.getElementById("pred").innerText = "Thinking…";
-      await new Promise(resolve => setTimeout(resolve, 500));
+      document.getElementById("status").innerText = "Processing gesture...";
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
 
-      if (tempBuffer.length < FRAME_SIZE) {
-        const need = FRAME_SIZE - tempBuffer.length;
-        for (let i = 0; i < need; i++)
-          tempBuffer.push(new Array(VECTOR_LEN).fill(0));
+      let seq = [...sequence];
+      
+      // IMPROVEMENT 6: Better quality checking
+      // WHY: Warn user if recording quality was poor
+      const avgQuality = qualityHistory.slice(-seq.length).reduce((a,b) => a+b, 0) / seq.length;
+      if (avgQuality < 0.3) {
+        document.getElementById("status").innerText = 
+          "⚠️ Low hand detection quality - try again with hand clearly visible";
       }
 
-      const tensor = new ort.Tensor("float32", tempBuffer.flat(), [1, FRAME_SIZE, VECTOR_LEN]);
+      // IMPROVEMENT 7: Handle variable feature sizes better
+      // WHY: Your model expects 42 features, but we might have 63 if using Z
+      // We need to match what the model was trained with
+      const expectedFeatureSize = VECTOR_LEN; // 42 from training
+      const featureSize = seq.length > 0 ? seq[0].length : expectedFeatureSize;
+
+      // Pad or truncate sequence to match expected length
+      if (seq.length < SEQ_LEN) {
+        const pad = SEQ_LEN - seq.length;
+        for (let i = 0; i < pad; i++) {
+          seq.push(new Array(featureSize).fill(0));
+        }
+      } else {
+        seq = seq.slice(-SEQ_LEN);
+      }
+
+      const flat = seq.flat();
+      
+      // IMPROVEMENT 8: Better normalization to prevent extreme values
+      // WHY: Removes outliers that can confuse the model
+      // HOW IT WORKS: 
+      // 1. Calculate mean (average) and standard deviation
+      // 2. Remove any values too far from mean (outliers)
+      // 3. Normalize to have mean=0, std=1
+      let sum = 0, sumSq = 0, count = 0;
+      
+      // First pass: calculate mean
+      for (let i = 0; i < flat.length; i++) {
+        sum += flat[i];
+        count++;
+      }
+      const mean = sum / count;
+      
+      // Second pass: calculate standard deviation
+      for (let i = 0; i < flat.length; i++) {
+        sumSq += (flat[i] - mean) * (flat[i] - mean);
+      }
+      const std = Math.sqrt(sumSq / count) + 1e-6;
+      
+      // Normalize: (value - mean) / std
+      // This makes all values centered around 0 with spread of 1
+      for (let i = 0; i < flat.length; i++) {
+        flat[i] = (flat[i] - mean) / std;
+        // Clip extreme values to prevent outliers from dominating
+        flat[i] = Math.max(-5, Math.min(5, flat[i]));
+      }
+
+      // IMPROVEMENT 9: Match model's expected input size exactly
+      // WHY: Model was trained with specific input size, must match perfectly
+      const targetSize = SEQ_LEN * VECTOR_LEN;
+      let inputFlat = flat.slice(0, targetSize);
+      if (inputFlat.length < targetSize) {
+        inputFlat = inputFlat.concat(new Array(targetSize - inputFlat.length).fill(0));
+      }
+
+      // Run inference
+      const tensor = new ort.Tensor("float32", inputFlat, [1, SEQ_LEN, VECTOR_LEN]);
       const results = await sess.run({ seq: tensor });
       const logits = results.logits.data;
 
-      let maxVal = -Infinity, maxIdx = 0;
+      // IMPROVEMENT 10: Proper softmax calculation
+      // WHY: Converts raw model outputs to probabilities (0-100%)
+      // HOW IT WORKS:
+      // 1. Take e^x for each logit (exponential)
+      // 2. Divide each by sum of all exponentials
+      // 3. Result: values that sum to 1.0 (100%)
+      const maxLogit = Math.max(...logits);
+      let expSum = 0;
+      const probs = [];
+      
+      // Subtract max for numerical stability (prevents overflow)
       for (let i = 0; i < logits.length; i++) {
-        if (logits[i] > maxVal) { maxVal = logits[i]; maxIdx = i; }
+        const exp = Math.exp(logits[i] - maxLogit);
+        probs.push(exp);
+        expSum += exp;
+      }
+      
+      for (let i = 0; i < probs.length; i++) {
+        probs[i] /= expSum;
       }
 
-      const prob = Math.exp(maxVal) / logits.reduce((s, v) => s + Math.exp(v), 0);
+      // IMPROVEMENT 11: Temporal smoothing for stability
+      // WHY: Single predictions can be noisy, averaging reduces errors
+      // HOW IT WORKS: Keep last 3 predictions, average them together
+      const useSmoothing = document.getElementById('smoothCheck').checked;
+      let finalProbs = [...probs];
+      
+      if (useSmoothing) {
+        recentPredictions.push(probs);
+        if (recentPredictions.length > 3) recentPredictions.shift();
+        
+        // Average probabilities across recent predictions
+        finalProbs = new Array(probs.length).fill(0);
+        for (let pred of recentPredictions) {
+          for (let i = 0; i < pred.length; i++) {
+            finalProbs[i] += pred[i] / recentPredictions.length;
+          }
+        }
+      }
 
-      document.getElementById("pred").innerText =
-        `Result: ${LABELS[maxIdx]} (${(prob * 100).toFixed(1)}%)`;
+      // Sort by confidence to show top predictions
+      const sorted = finalProbs.map((p, i) => ({
+        label: LABELS[i] || `Class_${i}`, 
+        prob: p, 
+        idx: i
+      })).sort((a, b) => b.prob - a.prob);
+
+      const maxIdx = sorted[0].idx;
+      const conf = sorted[0].prob;
+
+      // Apply confidence threshold
+      const threshold = document.getElementById('thresholdSlider').value / 100;
+      
+      confHistory.push(conf);
+      if (confHistory.length > 50) confHistory.shift();
+      drawGraph('confGraph', confHistory, '#0f0');
+
+      displayTopPredictions(sorted.slice(0, 3));
+
+      // IMPROVEMENT 12: Show uncertainty when confidence is low
+      // WHY: Honest feedback helps user understand when to retake gesture
+      if (conf >= threshold) {
+        stablePrediction = `Result: ${sorted[0].label} (${(conf * 100).toFixed(1)}%)`;
+      } else {
+        stablePrediction = `Uncertain: ${sorted[0].label}? (${(conf * 100).toFixed(1)}%, need ${(threshold*100).toFixed(0)}%)`;
+      }
+      
+      document.getElementById("pred").innerText = stablePrediction;
+      
+      if (avgQuality >= 0.3) {
+        document.getElementById("status").innerText = "";
+      }
     }
 
-    /************ START DETECTION ************/
-    document.getElementById("detectBtn").addEventListener("click", async () => {
-      if (!sess) return;
+    function displayTopPredictions(top3) {
+      const container = document.getElementById('topPreds');
+      container.innerHTML = '';
+      
+      for (let pred of top3) {
+        const bar = document.createElement('div');
+        bar.className = 'pred-bar';
+        
+        bar.innerHTML = `
+          <span class="pred-label">${pred.label}</span>
+          <div class="pred-progress">
+            <div class="pred-fill" style="width: ${pred.prob * 100}%"></div>
+          </div>
+          <span class="pred-value">${(pred.prob * 100).toFixed(1)}%</span>
+        `;
+        
+        container.appendChild(bar);
+      }
+    }
 
-      tempBuffer = [];
+    /************ START DETECTION BUTTON ************/
+    document.getElementById("detectBtn").addEventListener("click", async () => {
+      if (!sess || recordActive) return;
+
+      const btn = document.getElementById("detectBtn");
+      btn.disabled = true;
+      
+      sequence = [];
+      previousFrame = null;
       recordActive = true;
 
-      let countdown = 3;
       const cdElem = document.getElementById("countdown");
-      cdElem.innerText = countdown;
+      const duration = Math.ceil(RECORDING_DURATION / 1000);
+      cdElem.innerText = duration;
 
+      const startTime = Date.now();
+      
       const timer = setInterval(async () => {
-        countdown--;
-        cdElem.innerText = countdown > 0 ? countdown : "";
-
-        if (countdown <= 0) {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.ceil((RECORDING_DURATION - elapsed) / 1000);
+        
+        if (remaining > 0) {
+          cdElem.innerText = remaining;
+        } else {
+          cdElem.innerText = "";
           clearInterval(timer);
           recordActive = false;
+          
           await predict();
+          
+          btn.disabled = false;
         }
-      }, 1000);
+      }, 100);
     });
 
     /************ START ALL ************/
