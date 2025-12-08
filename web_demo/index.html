@@ -4,18 +4,52 @@
   <meta charset="utf-8">
   <title>PyTorch-LSTM Gesture Recognition (ONNX.js)</title>
   <style>
-    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#111;color:#0f0;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}
+    body{
+      margin:0;
+      font-family:Arial,Helvetica,sans-serif;
+      background:#111;
+      color:#0f0;
+      display:flex;
+      flex-direction:column;
+      align-items:center;    /* center horizontally */
+      justify-content:flex-start;  /* content starts at top */
+      padding-top:20px;      /* small spacing */
+      height:100vh;
+    }
+
     h2{margin-bottom:.2em}
-    video{transform:scaleX(-1);border:2px solid #0f0;border-radius:6px}
-    #pred{font-size:3em;margin-top:.3em;font-weight:bold}
+    #camWrapper{position:relative}
+    video{transform:scaleX(-1);border:2px solid #0f0;border-radius:6px;position:absolute;top:0;left:0}
+    canvas{transform:scaleX(-1);top:0;left:0}
+    #pred{font-size:2em;margin-top:.5em;font-weight:bold}
+    #countdown{font-size:3em;color:#f00;margin-top:0.2em;height:1.5em}
+    button{
+      margin-top:15px;
+      padding:10px 20px;
+      font-size:1.2em;
+      font-weight:bold;
+      border-radius:8px;
+      background:#0f0;
+      color:#111;
+      border:none;
+      cursor:pointer;
+    }
     small{color:#888;margin-top:.5em}
   </style>
 </head>
 <body>
   <h2>PyTorch-LSTM Gesture Recognition</h2>
-  <video id="cam" autoplay playsinline></video>
-  <div id="pred">Loading model…</div>
-  <small>Allow webcam access &nbsp; | &nbsp; 50-frame buffer</small>
+
+  <!-- Wrapper holds video + canvas overlay -->
+  <div id="camWrapper">
+    <video id="cam" width="640" height="480" autoplay playsinline></video>
+    <canvas id="overlay" width="640" height="480"></canvas>
+  </div>
+
+  <button id="detectBtn">Start Detection</button>
+  <div id="countdown"></div>
+  <div id="pred">Model not ready…</div>
+  <small>Allow webcam access</small>
 
   <!-- external libs -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
@@ -24,70 +58,128 @@
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
 
-  <!-- =====  ALL JAVASCRIPT IN ONE PLACE  ===== -->
   <script>
-    /************  CONFIG  ************/
-    const LABELS = [               // ← same order as in Python label-encoder
-      '10', '11', 'HELLO', 'J', 'YES', 'Z'
-    ];
-    const FRAME_SIZE = 50;   // time-steps
-    const VECTOR_LEN = 42;   // 21 landmarks × 2 (x,y)
-    let sess = null;
-    const buffer = [];
+    /************ CONFIG ************/
+    const LABELS = ['10', '11', 'HELLO', 'J', 'YES', 'Z'];
+    const FRAME_SIZE = 50; 
+    const VECTOR_LEN = 42;
 
-    /************  LOAD ONNX  ************/
+    let sess = null;
+    let recordActive = false;
+    let tempBuffer = [];
+
+    /************ LOAD MODEL ************/
     async function loadModel() {
-      sess = await ort.InferenceSession.create("./gesture_lstm.onnx"); // ort, not onnx
-      console.log("✅ ONNX-Runtime Web ready");
-      document.getElementById("pred").innerText = "Make a gesture";
+      sess = await ort.InferenceSession.create("./gesture_lstm.onnx");
+      document.getElementById("pred").innerText = "Ready. Press Start Detection.";
     }
 
-    /************  MEDIAPIPE HAND  ************/
+    /************ MEDIAPIPE SETUP ************/
     const hands = new Hands({
       locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
     });
-    hands.setOptions({maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7});
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+
+    const videoEl = document.getElementById("cam");
+    const canvasEl = document.getElementById("overlay");
+    const ctx = canvasEl.getContext("2d");
 
     async function initCam() {
-      const camera = new Camera(document.getElementById("cam"), {
-        onFrame: async () => await hands.send({image: document.getElementById("cam")}),
-        width: 640, height: 480
+      const camera = new Camera(videoEl, {
+        onFrame: async () => await hands.send({ image: videoEl }),
+        width: 640, 
+        height: 480
       });
       await camera.start();
     }
 
     hands.onResults(onResults);
 
+    /************ DRAW LANDMARKS + RECORD DATA ************/
     function onResults(results) {
-      const vec = [];
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
       if (results.multiHandLandmarks && results.multiHandLandmarks[0]) {
         const lm = results.multiHandLandmarks[0];
-        for (let i = 0; i < 21; i++) { vec.push(lm[i].x, lm[i].y); }
+
+        // Draw connections
+        drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: '#0f0', lineWidth: 3 });
+
+        // Draw landmarks
+        drawLandmarks(ctx, lm, { color: '#0f0', radius: 4 });
+
+        // Recording
+        if (recordActive) {
+          const vec = [];
+          for (let i = 0; i < 21; i++) vec.push(lm[i].x, lm[i].y);
+          if (tempBuffer.length < FRAME_SIZE) tempBuffer.push(vec);
+        }
+
       } else {
-        vec.push(...new Array(VECTOR_LEN).fill(0));
+        // no hand visible → record zeros
+        if (recordActive) {
+          const vec = new Array(VECTOR_LEN).fill(0);
+          if (tempBuffer.length < FRAME_SIZE) tempBuffer.push(vec);
+        }
       }
-      buffer.push(vec);
-      if (buffer.length > FRAME_SIZE) buffer.shift();
-      if (buffer.length === FRAME_SIZE) predict();
     }
 
-    /************  INFERENCE  ************/
+    /************  PREDICTION WITH "THINKING…" DELAY  ************/
     async function predict() {
-      const tensor = new ort.Tensor("float32", buffer.flat(), [1, FRAME_SIZE, VECTOR_LEN]);
-      const feeds  = { seq: tensor };          // input name you exported
-      const results= await sess.run(feeds);    // returns object keyed by output name
-      const logits = results.logits.data;      // name from torch.onnx.export
+
+      document.getElementById("pred").innerText = "Thinking…";
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      if (tempBuffer.length < FRAME_SIZE) {
+        const need = FRAME_SIZE - tempBuffer.length;
+        for (let i = 0; i < need; i++)
+          tempBuffer.push(new Array(VECTOR_LEN).fill(0));
+      }
+
+      const tensor = new ort.Tensor("float32", tempBuffer.flat(), [1, FRAME_SIZE, VECTOR_LEN]);
+      const results = await sess.run({ seq: tensor });
+      const logits = results.logits.data;
 
       let maxVal = -Infinity, maxIdx = 0;
       for (let i = 0; i < logits.length; i++) {
         if (logits[i] > maxVal) { maxVal = logits[i]; maxIdx = i; }
       }
+
       const prob = Math.exp(maxVal) / logits.reduce((s, v) => s + Math.exp(v), 0);
+
       document.getElementById("pred").innerText =
-            `${LABELS[maxIdx]}  (${(prob * 100).toFixed(1)}%)`;
+        `Result: ${LABELS[maxIdx]} (${(prob * 100).toFixed(1)}%)`;
     }
 
-    /************  START  ************/
+    /************ START DETECTION ************/
+    document.getElementById("detectBtn").addEventListener("click", async () => {
+      if (!sess) return;
+
+      tempBuffer = [];
+      recordActive = true;
+
+      let countdown = 3;
+      const cdElem = document.getElementById("countdown");
+      cdElem.innerText = countdown;
+
+      const timer = setInterval(async () => {
+        countdown--;
+        cdElem.innerText = countdown > 0 ? countdown : "";
+
+        if (countdown <= 0) {
+          clearInterval(timer);
+          recordActive = false;
+          await predict();
+        }
+      }, 1000);
+    });
+
+    /************ START ALL ************/
     (async () => {
       await loadModel();
       await initCam();
