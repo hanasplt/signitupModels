@@ -1,257 +1,204 @@
 # ==========================================================
-# 0.  INSTALL THESE FIRST (one-time in terminal/command line)
-# ----------------------------------------------------------
-#   pip install opencv-python mediapipe numpy onnxruntime
+# STABLE REAL-TIME HAND GESTURE INFERENCE (ONNX)
 # ==========================================================
 
-import cv2                 # webcam handling + drawing
-import mediapipe as mp     # Google hand-landmarker
-import numpy as np         # fast math on arrays
-import pickle              # load Python objects saved to disk
-import onnxruntime as ort  # run the exported ONNX neural-net
-from collections import deque   # fast queue for confidence graph
-import time                # small delays / timers
+import cv2
+import mediapipe as mp
+import numpy as np
+import pickle
+import onnxruntime as ort
+from collections import deque
+import time
 
 # ==========================================================
-# 1.  LOAD THE NEURAL-NET + LABEL NAMES
-# ----------------------------------------------------------
-# We trained a PyTorch LSTM → exported to ONNX.
-# We also saved the label-encoder (sklearn) so we can turn
-# prediction numbers ("class 3") into human words ("HELLO").
+# CONFIG
 # ==========================================================
 
-MODEL_PATH = "web_demo/gesture_lstm.onnx"          # the neural net
-LABEL_ENCODER_PATH = "web_demo/label_encoder.pickle"  # the label list
-
-print("Loading ONNX model...")
-session = ort.InferenceSession(MODEL_PATH)         # create ONNX runtime
-input_name = session.get_inputs()[0].name          # net input node name
-
-# open the small file that contains the list of gesture names
-with open(LABEL_ENCODER_PATH, "rb") as f:
-    label_encoder = pickle.load(f)
-
-CLASSES = list(label_encoder.classes_)   # ['HELLO', 'J', 'YES', ...]
-print("Loaded classes:", CLASSES)
-
-# ==========================================================
-# 2.  MEDIAPIPE SET-UP
-# ----------------------------------------------------------
-# MediaPipe Hands gives us 21 key-points (x,y,z) for every hand
-# in the camera image. We only need 1 hand.
-# ==========================================================
-
-mp_hands = mp.solutions.hands          # shortcut
-mp_drawing = mp.solutions.drawing_utils # helper to draw skeleton
-
-hands = mp_hands.Hands(
-        max_num_hands=1,               # only 1 hand please
-        min_detection_confidence=0.9)  # 50 % sure there is a hand
-
-# ==========================================================
-# 3.  PARAMETERS YOU CAN TWEAK
-# ----------------------------------------------------------
-# SEQ_LEN              : how many hand-frames the net looks at
-# BASE_MOTION_NOISE    : smallest movement we still consider "motion"
-# NO_MOTION_REQUIRED   : how many *still* frames trigger the network
-# COOLDOWN_FRAMES      : ignore new gestures for X frames after one
-# ==========================================================
+MODEL_PATH = "web_demo/gesture_lstm.onnx"
+LABEL_ENCODER_PATH = "web_demo/label_encoder.pickle"
 
 SEQ_LEN = 50
-BASE_MOTION_NOISE = 0.005 #0.0025
-motion_threshold = BASE_MOTION_NOISE
+VECTOR_LEN = 42
 
+CONF_THRESHOLD = 0.65
 NO_MOTION_REQUIRED = 10
-COOLDOWN_FRAMES = 10
-
-# circular buffer for nice confidence graph
-conf_history = deque(maxlen=50)
+COOLDOWN_FRAMES = 12
+BASE_MOTION_NOISE = 0.0025
+SMOOTHING_ALPHA = 0.75
 
 # ==========================================================
-# 4.  WEBCAM INITIALISATION
-# ----------------------------------------------------------
-# 0 = default camera (laptop webcam). Press ESC later to quit.
+# LOAD MODEL
+# ==========================================================
+
+print("Loading ONNX model...")
+session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+input_name = session.get_inputs()[0].name
+
+with open(LABEL_ENCODER_PATH, "rb") as f:
+    le = pickle.load(f)
+
+CLASSES = list(le.classes_)
+print("Classes:", CLASSES)
+
+def softmax(x):
+    e = np.exp(x - np.max(x))
+    return e / e.sum(axis=1, keepdims=True)
+
+# ==========================================================
+# MEDIAPIPE
+# ==========================================================
+
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    max_num_hands=1,
+    model_complexity=1,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
+
+# ==========================================================
+# WEBCAM
 # ==========================================================
 
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
-    raise IOError("Cannot open webcam")
+    raise RuntimeError("Camera error")
 
-# small countdown so you can move your hand in view
-print("Starting in:")
-for i in range(3, 0, -1):
-    print(i)
-    time.sleep(1)
-print("🎬 ONNX Real-time Detection Started!")
-
-# variables we will update every frame
-sequence = []          # list of 42-D vectors
-prev_landmarks = None  # previous vector (to compute motion)
-no_motion_count = 0    # how many frames we have been still
-cooldown_counter = 0   # frames left to ignore new gestures
-stable_prediction = "Waiting for gesture..."
+print("Starting...")
+time.sleep(2)
 
 # ==========================================================
-# 5.  MAIN LOOP – runs forever until you press ESC
-# ----------------------------------------------------------
-# Each loop:
-#   - read 1 camera frame
-#   - find hand landmarks
-#   - decide if hand is moving or still
-#   - when still long enough → run ONNX model
-#   - draw results + confidence graph
+# STATE
+# ==========================================================
+
+sequence = []
+prev_lm = None
+smooth_lm = None
+no_motion = 0
+cooldown = 0
+
+conf_history = deque(maxlen=60)
+
+prediction = "Waiting..."
+confidence = 0.0
+
+# ==========================================================
+# MAIN LOOP (INFERENCE)
 # ==========================================================
 
 while True:
-    ret, frame = cap.read()      # ret = success?  frame = image
-    if not ret:                  # camera problem → quit
+    ret, frame = cap.read()
+    if not ret:
         break
 
-    # mirror image so it feels like a mirror
     frame = cv2.flip(frame, 1)
-
-    # MediaPipe needs RGB, OpenCV gives BGR
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb) # ← heavy lifting here
+    results = hands.process(rgb)
 
-    # default text we will show
-    display_pred = stable_prediction
+    motion = 0.0
 
-    # reduce cooldown every frame
-    if cooldown_counter > 0:
-        cooldown_counter -= 1
+    if cooldown > 0:
+        cooldown -= 1
 
-    # ============== HAND FOUND ? =========================
     if results.multi_hand_landmarks:
-        # pick first (only) hand
-        hand_landmarks = results.multi_hand_landmarks[0]
+        hand = results.multi_hand_landmarks[0]
+        mp_draw.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
 
-        # draw pretty skeleton on top of hand
-        mp_drawing.draw_landmarks(
-            frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        lm = np.array([[p.x, p.y] for p in hand.landmark])
+        lm -= lm[0]                    # wrist-relative
+        lm = lm.flatten()
 
-        # convert 21 landmarks → numpy array (21×3)
-        landmarks = np.array([[lm.x, lm.y, lm.z]
-                              for lm in hand_landmarks.landmark])
-
-        # make coordinates relative to wrist (so hand position
-        # in image does not matter, only shape)
-        wrist = landmarks[0]
-        landmarks -= wrist
-
-        # flatten to 42 numbers (x,y only)
-        lm_flat = landmarks[:, :2].flatten()
-
-        # compute motion compared to previous frame
-        if prev_landmarks is not None:
-            motion = np.mean(np.abs(lm_flat - prev_landmarks))
+        # ---- EMA smoothing ----
+        if smooth_lm is None:
+            smooth_lm = lm
         else:
-            motion = 999  # first frame → big number
+            smooth_lm = SMOOTHING_ALPHA * smooth_lm + (1 - SMOOTHING_ALPHA) * lm
 
-        # auto-tune noise floor for first 6 seconds
-        if time.time() < 6:
-            BASE_MOTION_NOISE = (BASE_MOTION_NOISE * 0.9) + (motion * 0.1)
-            motion_threshold = BASE_MOTION_NOISE * 1.0
-
-        prev_landmarks = lm_flat   # save for next frame
-
-        # ignore frames during cooldown
-        if cooldown_counter > 0:
-            conf_history.append(0)
-            cv2.putText(frame, "Cooldown...", (20, 460),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-            cv2.imshow("Realtime Gesture (ONNX)", frame)
-            if cv2.waitKey(1) & 0xFF == 27:   # ESC quits
-                break
-            continue
-
-        # decide: moving or still?
-        if motion > motion_threshold:
-            sequence.append(lm_flat)   # keep building sequence
-            no_motion_count = 0
+        # ---- motion detection ----
+        if prev_lm is not None:
+            motion = np.mean(np.abs(smooth_lm - prev_lm))
         else:
-            no_motion_count += 1       # counting still frames
+            motion = 999
 
-        # ===== GESTURE ENDED → RUN NEURAL NET =====
-        if no_motion_count >= NO_MOTION_REQUIRED and len(sequence) > 20:
+        prev_lm = smooth_lm.copy()
 
-            seq = np.array(sequence)   # shape (N, 42)
+        cv2.putText(frame, f"Motion: {motion:.5f}", (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
 
-            # pad too-short sequences with zeros
+        # ---- motion logic ----
+        if cooldown == 0:
+            if motion > BASE_MOTION_NOISE:
+                sequence.append(smooth_lm)
+                no_motion = 0
+            else:
+                no_motion += 1
+
+        # ---- inference trigger ----
+        if no_motion >= NO_MOTION_REQUIRED and len(sequence) >= 20:
+            seq = np.array(sequence)
+
             if len(seq) < SEQ_LEN:
-                pad = np.zeros((SEQ_LEN - len(seq), 42))
-                seq = np.vstack([seq, pad])
+                seq = np.vstack([seq, np.zeros((SEQ_LEN-len(seq), VECTOR_LEN))])
             else:
-                seq = seq[-SEQ_LEN:]   # take last 50 frames
+                seq = seq[-SEQ_LEN:]
 
-            # normalize mean=0, std=1 (helps network)
-            seq = (seq - np.mean(seq)) / (np.std(seq) + 1e-6)
+            # 🔥 MATCH TRAINING NORMALIZATION 🔥
+            seq = (seq - seq.min()) / (seq.max() - seq.min() + 1e-6)
+
             X = np.expand_dims(seq.astype(np.float32), axis=0)
-            # X shape → (1, 50, 42) exactly what ONNX expects
 
-            # run inference
-            pred = session.run(None, {input_name: X})[0]  # returns list
-            idx  = np.argmax(pred)                        # winning class
-            conf = float(np.max(pred))                    # its confidence
-            label = CLASSES[idx]                          # human name
+            logits = session.run(None, {input_name: X})[0]
+            probs = softmax(logits)
 
-            conf_history.append(conf)
+            idx = np.argmax(probs)
+            confidence = float(probs[0][idx])
 
-            # only trust high-confidence predictions
-            if conf >= 0.90:
-                stable_prediction = f"{label} ({conf:.2f})"
-            else:
-                stable_prediction = "No gesture"
+            prediction = CLASSES[idx] if confidence >= CONF_THRESHOLD else "Uncertain"
 
-            # enter cooldown so we do not spam predictions
-            cooldown_counter = COOLDOWN_FRAMES
-            sequence = []           # start fresh
-            prev_landmarks = None
+            conf_history.append(confidence)
+
+            # reset
+            sequence.clear()
+            prev_lm = None
+            smooth_lm = None
+            no_motion = 0
+            cooldown = COOLDOWN_FRAMES
 
         else:
-            conf_history.append(0)  # still moving → 0 confidence
+            conf_history.append(0)
 
-    # ============== NO HAND FOUND =========================
     else:
-        prev_landmarks = None
+        prev_lm = None
+        smooth_lm = None
         conf_history.append(0)
 
-    # ============== DRAW CONFIDENCE GRAPH =================
-    graph_y = 450
-    graph_h = 120
-    graph_w = 300
+    # ======================================================
+    # VISUALS
+    # ======================================================
+
+    cv2.putText(frame, f"Prediction: {prediction}", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,0), 3)
+
+    cv2.putText(frame, f"Confidence: {confidence:.2f}", (20, 130),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+
+    # confidence graph
+    gy, gh, gw = 460, 120, 300
     x0 = 20
+    cv2.rectangle(frame, (x0, gy), (x0+gw, gy-gh), (50,50,50), 2)
 
-    # dark rectangle
-    cv2.rectangle(frame, (x0, graph_y), (x0 + graph_w, graph_y - graph_h),
-                  (50, 50, 50), 2)
+    pts = [(x0 + int(i/gw*gw), gy - int(c*gh))
+           for i, c in enumerate(conf_history)]
 
-    # build poly-line points
-    pts = []
-    for i, c in enumerate(conf_history):
-        x = x0 + int((i / len(conf_history)) * graph_w)
-        y = graph_y - int(c * graph_h)
-        pts.append((x, y))
-
-    # connect the dots
     for i in range(1, len(pts)):
-        cv2.line(frame, pts[i - 1], pts[i], (0, 255, 0), 2)
+        cv2.line(frame, pts[i-1], pts[i], (0,255,0), 2)
 
-    # ============== SHOW PREDICTION TEXT ==================
-    cv2.putText(frame, display_pred, (20, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3)
+    cv2.imshow("Stable ONNX Gesture Inference", frame)
 
-    # ============== SHOW IMAGE ============================
-    cv2.imshow("Realtime Gesture (ONNX)", frame)
-
-    # ESC key to quit
     if cv2.waitKey(1) & 0xFF == 27:
         break
 
-# ==========================================================
-# 6.  CLEAN-UP
-# ----------------------------------------------------------
-# Release camera and close windows properly.
-# ==========================================================
 cap.release()
 cv2.destroyAllWindows()
