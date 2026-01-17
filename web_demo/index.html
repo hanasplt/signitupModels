@@ -2,197 +2,234 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>PyTorch-LSTM Gesture Recognition (ONNX.js)</title>
+<title>ONNX Gesture Inference (Stable)</title>
 
 <style>
-body{
+body {
   margin:0;
-  font-family:Arial,Helvetica,sans-serif;
   background:#111;
   color:#0f0;
+  font-family:Arial, Helvetica, sans-serif;
   display:flex;
   flex-direction:column;
   align-items:center;
-  padding-top:20px;
 }
-video, canvas{transform:scaleX(-1)}
-#pred{font-size:2em;margin-top:.5em;font-weight:bold}
-#countdown{font-size:3em;color:#f00;height:1.5em}
-button{
-  margin-top:15px;padding:10px 20px;
-  font-size:1.2em;font-weight:bold;
-  border-radius:8px;background:#0f0;color:#111;border:none;
+#wrap {
+  position:relative;
+  width:640px;
+  height:480px;
 }
+video, canvas {
+  position:absolute;
+  top:0; left:0;
+  transform:scaleX(-1);
+}
+#pred { font-size:1.6em; margin-top:10px }
+#conf { color:#ff0 }
 </style>
 </head>
 
 <body>
-<h2>PyTorch-LSTM Gesture Recognition</h2>
+<h2>Browser-based Hand Gesture Inference</h2>
 
-<div style="position:relative">
-  <video id="cam" width="640" height="480" autoplay playsinline></video>
-  <canvas id="overlay" width="640" height="480"
-          style="position:absolute;top:0;left:0"></canvas>
+<div id="wrap">
+  <video id="video" width="640" height="480" autoplay playsinline></video>
+  <canvas id="canvas" width="640" height="480"></canvas>
 </div>
 
-<button id="detectBtn">Start Detection</button>
-<div id="countdown"></div>
-<div id="pred">Loading model…</div>
+<div id="pred">Loading model...</div>
+<div id="conf"></div>
 
-<!-- libs -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
+<!-- MediaPipe -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+
+<!-- ONNX Runtime -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
 
 <script>
-/******** CONFIG ********/
+/* ======================================================
+   CONFIG
+====================================================== */
 const LABELS = ['10','11','12','13','14','15','A','HELLO','J','YES','Z'];
-const FRAME_SIZE = 50;
-const VECTOR_LEN = 42;
+const SEQ_LEN = 50;
+const FEATURE_LEN = 42;
 
-/******** STATE ********/
-let session;
-let recording = false;
-let buffer = [];
-let busy = false;
+const MOTION_THRESH = 0.0025;
+const STILL_FRAMES = 10;
+const COOLDOWN = 12;
+const CONF_THRESH = 0.65;
+const SMOOTH_ALPHA = 0.75;
 
-/******** LOAD MODEL ********/
-async function loadModel(){
-  ort.env.wasm.wasmPaths =
-    "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
-  session = await ort.InferenceSession.create(
-    "./gesture_lstm.onnx",
-    { executionProviders:["wasm"] }
-  );
-  pred.innerText = "Ready. Press Start Detection.";
+/* ======================================================
+   STATE
+====================================================== */
+let session = null;
+let inputName = null;
+let outputName = null;
+
+let sequence = [];
+let prevLm = null;
+let smoothLm = null;
+let stillCount = 0;
+let cooldown = 0;
+
+/* ======================================================
+   UTILS
+====================================================== */
+function softmax(arr) {
+  const m = Math.max(...arr);
+  const ex = arr.map(v => Math.exp(v - m));
+  const s = ex.reduce((a,b)=>a+b,0);
+  return ex.map(v => v/s);
 }
 
-/******** MEDIAPIPE ********/
+function normalize(seq) {
+  let min = Infinity, max = -Infinity;
+  seq.flat().forEach(v => {
+    min = Math.min(min, v);
+    max = Math.max(max, v);
+  });
+  return seq.map(f => f.map(v => (v - min) / (max - min + 1e-6)));
+}
+
+/* ======================================================
+   LOAD ONNX
+====================================================== */
+async function loadModel() {
+  ort.env.wasm.wasmPaths =
+    "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
+
+  session = await ort.InferenceSession.create("./gesture_lstm.onnx");
+
+  inputName = session.inputNames[0];
+  outputName = session.outputNames[0];
+
+  document.getElementById("pred").innerText =
+    "Model loaded – show a gesture";
+}
+
+/* ======================================================
+   MEDIAPIPE
+====================================================== */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
 const hands = new Hands({
   locateFile: f =>
     `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
 });
+
 hands.setOptions({
   maxNumHands:1,
-  minDetectionConfidence:0.7,
-  minTrackingConfidence:0.7
+  modelComplexity:1,
+  minDetectionConfidence:0.4,
+  minTrackingConfidence:0.4
 });
 
-const video = cam;
-const canvas = overlay;
-const ctx = canvas.getContext("2d");
-
-/******** HAND RESULTS ********/
-hands.onResults(res=>{
+/* ======================================================
+   RESULTS CALLBACK
+====================================================== */
+hands.onResults(res => {
   ctx.clearRect(0,0,640,480);
 
-  if(res.multiHandLandmarks){
-    const lm = res.multiHandLandmarks[0];
-    drawConnectors(ctx,lm,HAND_CONNECTIONS,{color:"#0f0",lineWidth:3});
-    drawLandmarks(ctx,lm,{color:"#0f0",radius:4});
+  if (!session) return;
 
-    if(recording && buffer.length < FRAME_SIZE){
-      let v=[];
-      for(let i=0;i<21;i++)
-        v.push(lm[i].x, lm[i].y);
-      buffer.push(v);
+  if (cooldown > 0) cooldown--;
+
+  if (!res || !res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
+    prevLm = null;
+    smoothLm = null;
+    stillCount = 0;
+    return;
+  }
+
+  const hand = res.multiHandLandmarks[0];
+  drawConnectors(ctx, hand, HAND_CONNECTIONS, {color:"#0f0"});
+  drawLandmarks(ctx, hand, {color:"#0f0", radius:3});
+
+  // ===== landmarks =====
+  let curr = [];
+  for (let i=0;i<21;i++) {
+    curr.push(hand[i].x - hand[0].x);
+    curr.push(hand[i].y - hand[0].y);
+  }
+
+  // EMA smoothing
+  if (!smoothLm) smoothLm = curr;
+  else {
+    smoothLm = smoothLm.map((v,i)=>
+      SMOOTH_ALPHA*v + (1-SMOOTH_ALPHA)*curr[i]
+    );
+  }
+
+  // motion
+  let motion = 999;
+  if (prevLm)
+    motion = smoothLm.reduce((s,v,i)=>s+Math.abs(v-prevLm[i]),0)/smoothLm.length;
+
+  prevLm = [...smoothLm];
+
+  if (cooldown === 0) {
+    if (motion > MOTION_THRESH) {
+      sequence.push(smoothLm);
+      stillCount = 0;
+    } else {
+      stillCount++;
     }
   }
-  else if(recording && buffer.length < FRAME_SIZE){
-    if(buffer.length>0)
-      buffer.push(buffer[buffer.length-1]);
-    else
-      buffer.push(new Array(VECTOR_LEN).fill(0));
+
+  // ===== inference =====
+  if (stillCount >= STILL_FRAMES && sequence.length >= 20) {
+
+    while (sequence.length < SEQ_LEN)
+      sequence.push(new Array(FEATURE_LEN).fill(0));
+
+    sequence = normalize(sequence.slice(-SEQ_LEN));
+
+    const tensor = new ort.Tensor(
+      "float32",
+      sequence.flat(),
+      [1, SEQ_LEN, FEATURE_LEN]
+    );
+
+    session.run({ [inputName]: tensor }).then(out => {
+      const probs = softmax(Array.from(out[outputName].data));
+      const idx = probs.indexOf(Math.max(...probs));
+      const conf = probs[idx];
+
+      document.getElementById("pred").innerText =
+        conf >= CONF_THRESH ? LABELS[idx] : "Uncertain";
+      document.getElementById("conf").innerText =
+        `Confidence: ${(conf*100).toFixed(1)}%`;
+    });
+
+    sequence = [];
+    prevLm = null;
+    smoothLm = null;
+    stillCount = 0;
+    cooldown = COOLDOWN;
   }
 });
 
-/******** SAFE CAMERA LOOP ********/
-new Camera(video,{
-  onFrame: async()=>{
-    if(busy) return;
-    busy = true;
-    await hands.send({image:video});
-    busy = false;
-  },
+/* ======================================================
+   CAMERA
+====================================================== */
+const camera = new Camera(video, {
+  onFrame: async()=>await hands.send({image:video}),
   width:640,
   height:480
-}).start();
+});
 
-/******** NORMALIZATION (SAFE) ********/
-function normalize(seq){
-  let min=Infinity, max=-Infinity;
-
-  seq.forEach(f=>{
-    f.forEach(v=>{
-      if(v!==0){
-        min=Math.min(min,v);
-        max=Math.max(max,v);
-      }
-    });
-  });
-
-  if(!isFinite(min) || max-min<1e-6)
-    return seq;
-
-  return seq.map(f=>f.map(v=>(v-min)/(max-min)));
-}
-
-/******** SOFTMAX ********/
-function softmax(a){
-  const m=Math.max(...a);
-  const e=a.map(v=>Math.exp(v-m));
-  const s=e.reduce((x,y)=>x+y,0);
-  return e.map(v=>v/s);
-}
-
-/******** PREDICT ********/
-async function predict(){
-  pred.innerText="Thinking…";
-
-  while(buffer.length<FRAME_SIZE){
-    if(buffer.length>0)
-      buffer.push(buffer[buffer.length-1]);
-    else
-      buffer.push(new Array(VECTOR_LEN).fill(0));
-  }
-
-  const norm = normalize(buffer);
-
-  const input = new ort.Tensor(
-    "float32",
-    norm.flat(),
-    [1,FRAME_SIZE,VECTOR_LEN]
-  );
-
-  const out = await session.run({seq:input});
-  const probs = softmax(Array.from(out.logits.data));
-  const idx = probs.indexOf(Math.max(...probs));
-
-  pred.innerText =
-    `Result: ${LABELS[idx]} (${(probs[idx]*100).toFixed(1)}%)`;
-}
-
-/******** BUTTON ********/
-detectBtn.onclick=()=>{
-  buffer=[];
-  recording=true;
-
-  let t=2;
-  countdown.innerText=t;
-
-  const timer=setInterval(async()=>{
-    t--;
-    countdown.innerText=t>0?t:"";
-    if(t<=0){
-      clearInterval(timer);
-      recording=false;
-      await predict();
-    }
-  },1000);
-};
-
-loadModel();
+/* ======================================================
+   START
+====================================================== */
+(async()=>{
+  await loadModel();
+  await camera.start();
+})();
 </script>
 </body>
 </html>
