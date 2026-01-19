@@ -1,6 +1,7 @@
 # =========================================================
-# dynamic_trainer_torch_fixed_epochs_full_metrics_with_val_viz.py
+# LSTM TRAINER WITH SEMANTIC HAND FEATURES (RESEARCH-GRADE)
 # =========================================================
+
 import os, pickle, numpy as np, torch, torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
@@ -8,64 +9,112 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 
-# ---------- config ----------
-EPOCHS      = 50
-BATCH_SIZE  = 10
-LR          = 1e-3
-DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
-SAVE_DIR    = "./web_demo"
-ONNX_NAME   = "gesture_lstm.onnx"
-ENCODER_NAME= "label_encoder.pickle"
+# ---------------- CONFIG ----------------
+EPOCHS = 50
+BATCH_SIZE = 10
+LR = 1e-3
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-FRAME_COUNT, VECTOR_LEN = 50, 42
-# ----------------------------
+SAVE_DIR = "./web_demo"
+ONNX_NAME = "gesture_lstm.onnx"
+ENCODER_NAME = "label_encoder.pickle"
+
+FRAME_COUNT = 50
+
+RAW_LM = 42
+VEL = 42
+FSTATE = 5
+VECTOR_LEN = RAW_LM + VEL + FSTATE   # 89
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# 1. load pickle
+# =========================================================
+# 1. LOAD DATA
+# =========================================================
+
 with open('./processed_data/dynamic_gestures_data_VISUAL.p','rb') as f:
     data_dict = pickle.load(f)
 
 X_raw, y_raw = data_dict['data'], data_dict['labels']
 
-# 2. keep only consistent shapes
+# =========================================================
+# 2. FEATURE ENGINEERING
+# =========================================================
+
+def extract_semantic_features(seq):
+    seq = np.array(seq, dtype=np.float32)
+
+    velocities = np.diff(seq, axis=0, prepend=seq[:1])
+
+    finger_states_seq = []
+    for frame in seq:
+        lm = frame.reshape(21, 2)
+
+        states = [
+            lm[4,1]  < lm[3,1],
+            lm[8,1]  < lm[6,1],
+            lm[12,1] < lm[10,1],
+            lm[16,1] < lm[14,1],
+            lm[20,1] < lm[18,1],
+        ]
+        finger_states_seq.append(states)
+
+    finger_states_seq = np.array(finger_states_seq, dtype=np.float32)
+
+    return np.concatenate([seq, velocities, finger_states_seq], axis=1)
+
 X, y = [], []
+
 for seq, label in zip(X_raw, y_raw):
     seq = np.array(seq, dtype=np.float32)
-    if seq.shape == (FRAME_COUNT, VECTOR_LEN):
-        X.append(seq)
+    if seq.shape == (FRAME_COUNT, RAW_LM):
+        X.append(extract_semantic_features(seq))
         y.append(label)
 
 X = np.array(X)
 y = np.array(y)
-print(f"Kept {len(X)} samples")
 
-# 3. normalize per sequence
-xmin = X.min(axis=(1,2), keepdims=True)
-xmax = X.max(axis=(1,2), keepdims=True)
-X = (X - xmin) / (xmax - xmin + 1e-6)
+print("Final feature shape:", X.shape)
 
-# 4. encode labels
+# =========================================================
+# 3. NORMALIZATION
+# =========================================================
+
+mean = X.mean(axis=(0,1), keepdims=True)
+std = X.std(axis=(0,1), keepdims=True) + 1e-6
+X = (X - mean) / std
+
+np.save("web_demo/norm_mean.npy", mean)
+np.save("web_demo/norm_std.npy", std)
+
+np.savetxt("web_demo/norm_mean.json", mean.flatten(), delimiter=",")
+np.savetxt("web_demo/norm_std.json", std.flatten(), delimiter=",")
+
+# =========================================================
+# 4. LABEL ENCODING
+# =========================================================
+
 le = LabelEncoder()
 y_idx = le.fit_transform(y)
 num_classes = len(le.classes_)
 print("Classes:", le.classes_)
 
-# 5. split data
+# =========================================================
+# 5. SPLIT (550 SAMPLES BALANCED)
+# =========================================================
+
 X_train, X_tmp, y_train, y_tmp = train_test_split(
     X, y_idx, test_size=0.30, stratify=y_idx, random_state=42)
 
 X_val, X_test, y_val, y_test = train_test_split(
     X_tmp, y_tmp, test_size=0.50, stratify=y_tmp, random_state=42)
 
-print(f"Train: {len(X_train)}  Val: {len(X_val)}  Test: {len(X_test)}")
+print(f"Train {len(X_train)} | Val {len(X_val)} | Test {len(X_test)}")
 
-unique, counts = np.unique(y_train, return_counts=True)
-print("Train distribution:")
-for u, c in zip(unique, counts):
-    print(le.classes_[u], c)
+# =========================================================
+# 6. DATASET
+# =========================================================
 
-# 6. dataset
 class SeqDataset(Dataset):
     def __init__(self, x, y):
         self.x = torch.tensor(x, dtype=torch.float32)
@@ -77,7 +126,10 @@ class SeqDataset(Dataset):
 train_loader = DataLoader(SeqDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
 val_loader   = DataLoader(SeqDataset(X_val, y_val), batch_size=BATCH_SIZE)
 
-# 7. model
+# =========================================================
+# 7. MODEL
+# =========================================================
+
 class GestureLSTM(nn.Module):
     def __init__(self):
         super().__init__()
@@ -92,23 +144,23 @@ net = GestureLSTM().to(DEVICE)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(net.parameters(), lr=LR)
 
-# ---------- LIVE PLOTS ----------
+# =========================================================
+# 8. LIVE TRAINING VISUALIZATION
+# =========================================================
+
 plt.ion()
 fig, axs = plt.subplots(1, 3, figsize=(16,4))
 
 train_losses, val_losses = [], []
-train_accs, val_accs     = [], []
+train_accs, val_accs = [], []
 
-# 8. training loop
 for epoch in range(1, EPOCHS + 1):
 
-    # ---- TRAIN ----
     net.train()
     loss_sum, correct = 0, 0
 
     for xb, yb in train_loader:
         xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-
         optimizer.zero_grad()
         out = net(xb)
         loss = criterion(out, yb)
@@ -116,12 +168,11 @@ for epoch in range(1, EPOCHS + 1):
         optimizer.step()
 
         loss_sum += loss.item() * xb.size(0)
-        correct  += (out.argmax(1) == yb).sum().item()
+        correct += (out.argmax(1) == yb).sum().item()
 
     train_losses.append(loss_sum / len(train_loader.dataset))
     train_accs.append(correct / len(train_loader.dataset))
 
-    # ---- VALIDATION ----
     net.eval()
     v_loss, v_correct = 0, 0
 
@@ -135,77 +186,82 @@ for epoch in range(1, EPOCHS + 1):
     val_losses.append(v_loss / len(val_loader.dataset))
     val_accs.append(v_correct / len(val_loader.dataset))
 
-    # ---- LIVE METRICS PLOT ----
     axs[0].cla()
     axs[0].plot(train_losses, label='Train')
     axs[0].plot(val_losses, label='Val')
-    axs[0].set_title('Loss')
+    axs[0].set_title("Loss")
     axs[0].legend()
 
     axs[1].cla()
     axs[1].plot(train_accs, label='Train')
     axs[1].plot(val_accs, label='Val')
     axs[1].set_ylim(0,1)
-    axs[1].set_title('Accuracy')
+    axs[1].set_title("Accuracy")
     axs[1].legend()
 
-    # ---- VISUALIZE VALIDATION PREDICTION ----
     idx = np.random.randint(len(X_val))
     xb = torch.tensor(X_val[idx:idx+1], dtype=torch.float32).to(DEVICE)
-    yb = torch.tensor([y_val[idx]])
-    xb = xb.to(DEVICE)
-
     logits = net(xb)
-    probs = torch.softmax(logits, dim=1)
-    pred = probs.argmax(1)[0].item()
-    conf = probs[0, pred].item()
-    true = yb[0].item()
+    probs = torch.softmax(logits, 1)
+    pred = probs.argmax(1).item()
+    conf = probs[0,pred].item()
+    true = y_val[idx]
 
     axs[2].cla()
     axs[2].imshow(xb[0].cpu().numpy().T, aspect='auto', cmap='viridis')
-    axs[2].set_title(
-        f"True: {le.classes_[true]} | "
-        f"Pred: {le.classes_[pred]} ({conf:.2f})"
-    )
-    axs[2].set_xlabel("Frame")
-    axs[2].set_ylabel("Feature")
+    axs[2].set_title(f"True: {le.classes_[true]} | Pred: {le.classes_[pred]} ({conf:.2f})")
 
     plt.pause(0.01)
 
-    print(
-        f"Epoch {epoch:03d} | "
-        f"loss {train_losses[-1]:.4f} acc {train_accs[-1]:.3f} | "
-        f"val-loss {val_losses[-1]:.4f} val-acc {val_accs[-1]:.3f}"
-    )
+    print(f"Epoch {epoch:03d} | "
+          f"loss {train_losses[-1]:.4f} acc {train_accs[-1]:.3f} | "
+          f"val-loss {val_losses[-1]:.4f} val-acc {val_accs[-1]:.3f}")
 
 plt.ioff()
 plt.show()
 
-# 9. save model
-torch.save(net.state_dict(), os.path.join(SAVE_DIR, "final_lstm.pth"))
+# =========================================================
+# 10. TEST SET EVALUATION (CRITICAL)
+# =========================================================
 
-# 10. test evaluation
 net.eval()
 with torch.no_grad():
-    y_pred = net(torch.tensor(X_test, dtype=torch.float32).to(DEVICE)).argmax(1).cpu()
+    y_pred = net(torch.tensor(X_test, dtype=torch.float32).to(DEVICE)) \
+                .argmax(1).cpu().numpy()
 
-print("\n" + classification_report(y_test, y_pred, target_names=le.classes_))
+print("\nTEST CLASSIFICATION REPORT:\n")
+print(classification_report(y_test, y_pred, target_names=le.classes_))
 
-# 11. confusion matrix
+# =========================================================
+# 11. CONFUSION MATRIX
+# =========================================================
+
 cm = confusion_matrix(y_test, y_pred)
 
-plt.figure(figsize=(6,5))
+plt.figure(figsize=(7,6))
 plt.imshow(cm, cmap='Blues')
+plt.title("Confusion Matrix (Test Set)")
 plt.colorbar()
+
 plt.xticks(range(num_classes), le.classes_, rotation=45)
 plt.yticks(range(num_classes), le.classes_)
-plt.xlabel('Predicted')
-plt.ylabel('True')
-plt.title('Confusion Matrix')
+
+plt.xlabel("Predicted")
+plt.ylabel("True")
+
+for i in range(num_classes):
+    for j in range(num_classes):
+        plt.text(j, i, cm[i, j],
+                 ha="center", va="center",
+                 color="white" if cm[i,j] > cm.max()/2 else "black")
+
 plt.tight_layout()
 plt.show()
 
-# 12. ONNX export
+# =========================================================
+# 12. EXPORT ONNX
+# =========================================================
+
 dummy = torch.randn(1, FRAME_COUNT, VECTOR_LEN, device=DEVICE)
 torch.onnx.export(
     net, dummy,
@@ -218,8 +274,7 @@ torch.onnx.export(
     dynamo=False
 )
 
-# 13. save label encoder
 with open(os.path.join(SAVE_DIR, ENCODER_NAME), 'wb') as f:
     pickle.dump(le, f)
 
-print("✅ Training complete with live validation visualization")
+print("✅ Semantic-feature model trained, evaluated, and exported")
