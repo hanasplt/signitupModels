@@ -1,227 +1,175 @@
-<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>FSL Stable Inference (ONNX)</title>
-    <style>
-        body { margin:0; background:#111; color:#0f0; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
-        #wrap { position:relative; width:640px; height:480px; margin-top: 20px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
-        video, canvas { position:absolute; top:0; left:0; transform:scaleX(-1); }
-        .ui-panel { width: 640px; background: #222; padding: 15px; border-radius: 0 0 10px 10px; border: 1px solid #333; text-align: center; }
-        #pred { font-size: 2.8em; font-weight: bold; color: #0f0; text-shadow: 0 0 10px #0f0; margin: 5px 0; }
-        #conf { color: #ff0; font-size: 1.2em; font-family: monospace; }
-        #status { color: #888; font-size: 0.9em; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px; }
-        .recording { color: #f00 !important; font-weight: bold; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.5; } }
-    </style>
-</head>
+# ==========================================================
+# STABLE REAL-TIME HAND GESTURE INFERENCE (ONNX) — FIXED RANK
+# ==========================================================
 
-<body>
-    <h2>FSL Dynamic Gesture Recognition</h2>
+import cv2
+import mediapipe as mp
+import numpy as np
+import pickle
+import onnxruntime as ort
+from collections import deque
+import time
 
-    <div id="wrap">
-        <video id="video" width="640" height="480" autoplay playsinline></video>
-        <canvas id="canvas" width="640" height="480"></canvas>
-    </div>
+# ==========================================================
+# CONFIG
+# ==========================================================
+MODEL_PATH = "web_demo/gesture_lstm.onnx"
+LABEL_ENCODER_PATH = "web_demo/label_encoder.pickle"
 
-    <div class="ui-panel">
-        <div id="pred">INITIALIZING...</div>
-        <div id="conf">CONF: 0.00</div>
-        <div id="status">Loading Assets...</div>
-    </div>
+SEQ_LEN = 50
+VECTOR_LEN = 89 
 
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+CONF_THRESHOLD = 0.65
+NO_MOTION_REQUIRED = 8 
+COOLDOWN_FRAMES = 15
+BASE_MOTION_NOISE = 0.003
+SMOOTHING_ALPHA = 0.6
 
-    <script>
-        /* ================= CONFIG (Matches Python) ================= */
-        const SEQ_LEN = 50;
-        const VECTOR_LEN = 89;
-        const CONF_THRESHOLD = 0.65;
-        const NO_MOTION_REQUIRED = 8;
-        const COOLDOWN_FRAMES = 15;
-        const BASE_MOTION_NOISE = 0.003;
-        const SMOOTHING_ALPHA = 0.6;
+# ==========================================================
+# LOAD MODEL + NORMALIZATION
+# ==========================================================
+print("Initializing Inference Engine...")
+session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+input_name = session.get_inputs()[0].name
 
-        let session = null, inputName = null, outputName = null;
-        let LABELS = [];
-        let normMean = null, normStd = null;
+with open(LABEL_ENCODER_PATH, "rb") as f:
+    le = pickle.load(f)
+CLASSES = list(le.classes_)
 
-        let sequence = [];
-        let prevLm = null;
-        let smoothLm = null;
-        let noMotionCount = 0;
-        let cooldown = 0;
+# ✅ FIXED: Flatten normalization arrays to prevent Rank/Dimension errors
+norm_mean = np.load("web_demo/norm_mean.npy").flatten().astype(np.float32)
+norm_std  = np.load("web_demo/norm_std.npy").flatten().astype(np.float32)
 
-        /* ================= MATH UTILS ================= */
-        function softmax(arr) {
-            const m = Math.max(...arr);
-            const ex = arr.map(v => Math.exp(v - m));
-            const s = ex.reduce((a, b) => a + b, 0);
-            return ex.map(v => v / s);
-        }
+def softmax(x):
+    e = np.exp(x - np.max(x))
+    return e / e.sum(axis=1, keepdims=True)
 
-        function computeFingerStates(p) {
-            // p is flat [x0, y0, x1, y1...] 
-            // We need Y coordinates of specific joints (indices 1, 3, 5, 7, 9... of the flat array)
-            // p[9] is Tip Y, p[5] is PIP Y for Index finger, etc.
-            return [
-                p[4*2+1]  < p[3*2+1]  ? 1.0 : 0.0, // Thumb
-                p[8*2+1]  < p[6*2+1]  ? 1.0 : 0.0, // Index
-                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0, // Middle
-                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0, // Ring
-                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0  // Pinky
-            ];
-        }
+# ==========================================================
+# MEDIAPIPE
+# ==========================================================
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+hands = mp_hands.Hands(
+    max_num_hands=1, 
+    model_complexity=1, 
+    min_detection_confidence=0.7, 
+    min_tracking_confidence=0.7
+)
 
-        /* ================= ASSET LOADING ================= */
-        async function loadAssets() {
-            try {
-                ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
+# ==========================================================
+# STATE & UTILS
+# ==========================================================
+cap = cv2.VideoCapture(0)
+sequence = []
+prev_lm = None
+smooth_lm = None
+no_motion = 0
+cooldown = 0
+prediction = "Waiting..."
+confidence = 0.0
 
-                const [mRes, sRes, lRes] = await Promise.all([
-                    fetch(`./norm_mean.json?v=${Date.now()}`),
-                    fetch(`./norm_std.json?v=${Date.now()}`),
-                    fetch(`./labels.json?v=${Date.now()}`)
-                ]);
+def compute_finger_states(lm_flat):
+    """Calculates semantic states (Open/Closed) based on Y-coordinates."""
+    p = lm_flat.reshape(21, 2)
+    return np.array([
+        p[4,1]  < p[3,1],  # Thumb
+        p[8,1]  < p[6,1],  # Index
+        p[12,1] < p[10,1], # Middle
+        p[16,1] < p[14,1], # Ring
+        p[20,1] < p[18,1]  # Pinky
+    ], dtype=np.float32)
 
-                normMean = await mRes.json();
-                normStd = await sRes.json();
-                LABELS = await lRes.json();
+# ==========================================================
+# MAIN LOOP
+# ==========================================================
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret: break
 
-                session = await ort.InferenceSession.create("./gesture_lstm.onnx");
-                inputName = session.inputNames[0];
-                outputName = session.outputNames[0];
+    frame = cv2.flip(frame, 1)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(rgb)
 
-                document.getElementById("status").innerText = "Ready - Show hand to begin";
-                document.getElementById("pred").innerText = "WAITING";
-            } catch (e) {
-                document.getElementById("status").innerText = "Error Loading Assets";
-                console.error(e);
-            }
-        }
+    motion = 0.0
+    if cooldown > 0: cooldown -= 1
 
-        /* ================= MEDIAPIPE LOOP ================= */
-        const video = document.getElementById("video");
-        const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d");
+    if results.multi_hand_landmarks:
+        hand = results.multi_hand_landmarks[0]
+        mp_draw.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
 
-        const hands = new Hands({
-            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
-        });
+        # 1. Coordinate Extraction
+        # Note: We flatten to 42 features (21 joints * 2 coords)
+        lm = np.array([[p.x, p.y] for p in hand.landmark], dtype=np.float32)
+        lm_flat = lm.flatten()
 
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.7,
-            minTrackingConfidence: 0.7
-        });
+        # 2. EMA Smoothing
+        if smooth_lm is None: smooth_lm = lm_flat
+        else: smooth_lm = SMOOTHING_ALPHA * smooth_lm + (1 - SMOOTHING_ALPHA) * lm_flat
 
-        hands.onResults(res => {
-            ctx.clearRect(0, 0, 640, 480);
-            if (!session || !normMean) return;
-            if (cooldown > 0) cooldown--;
+        # 3. Features: Velocity & Finger States
+        if prev_lm is None:
+            vel = np.zeros(42, dtype=np.float32)
+        else:
+            vel = smooth_lm - prev_lm
+            motion = np.mean(np.abs(vel))
 
-            if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
-                prevLm = smoothLm = null;
-                noMotionCount = 0;
-                return;
-            }
+        fstate = compute_finger_states(smooth_lm)
+        
+        # Combine into the 89-vector used in training
+        semantic_frame = np.concatenate([smooth_lm, vel, fstate])
+        prev_lm = smooth_lm.copy()
 
-            const hand = res.multiHandLandmarks[0];
-            drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
-            drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
+        # 4. Recording Logic
+        if cooldown == 0:
+            if motion > BASE_MOTION_NOISE:
+                sequence.append(semantic_frame)
+                no_motion = 0
+                cv2.putText(frame, "RECORDING...", (20, 450), 1, 1, (0,0,255), 2)
+            else:
+                no_motion += 1
 
-            // 1. Flatten Landmarks (42 features)
-            const lmFlat = [];
-            for (let i = 0; i < 21; i++) {
-                lmFlat.push(hand[i].x, hand[i].y);
-            }
+        # 5. Trigger Inference
+        if no_motion >= NO_MOTION_REQUIRED and len(sequence) >= 15:
+            seq_arr = np.array(sequence, dtype=np.float32)
+            
+            # ✅ FIXED: Padding by repeating the last frame context
+            if len(seq_arr) < SEQ_LEN:
+                padding = np.tile(seq_arr[-1], (SEQ_LEN - len(seq_arr), 1))
+                seq_arr = np.vstack([seq_arr, padding])
+            else:
+                seq_arr = seq_arr[-SEQ_LEN:]
 
-            // 2. EMA Smoothing
-            if (smoothLm === null) {
-                smoothLm = [...lmFlat];
-            } else {
-                smoothLm = smoothLm.map((v, i) => SMOOTHING_ALPHA * v + (1 - SMOOTH_ALPHA) * lmFlat[i]);
-            }
+            # ✅ FIXED: Normalization and Rank Handling
+            # Subtract 1D norm arrays from 2D sequence (Broadcasting)
+            seq_arr = (seq_arr - norm_mean) / (norm_std + 1e-6)
+            
+            # Expand to 3D: (1, 50, 89)
+            input_data = np.expand_dims(seq_arr, axis=0).astype(np.float32)
 
-            // 3. Velocity & Motion
-            let vel = new Array(42).fill(0);
-            let motion = 0;
-            if (prevLm !== null) {
-                vel = smoothLm.map((v, i) => v - prevLm[i]);
-                const absSum = vel.reduce((a, b) => a + Math.abs(b), 0);
-                motion = absSum / 42;
-            }
+            # Run ONNX Session
+            logits = session.run(None, {input_name: input_data})[0]
+            probs = softmax(logits)
+            
+            idx = np.argmax(probs)
+            confidence = float(probs[0][idx])
 
-            const fstates = computeFingerStates(smoothLm);
-            const semanticFrame = [...smoothLm, ...vel, ...fstates];
-            prevLm = [...smoothLm];
+            if confidence >= CONF_THRESHOLD:
+                prediction = CLASSES[idx]
+            else:
+                prediction = "Uncertain"
 
-            // 4. Recording Logic
-            const statusEl = document.getElementById("status");
-            if (cooldown === 0) {
-                if (motion > BASE_MOTION_NOISE) {
-                    sequence.push(semanticFrame);
-                    noMotionCount = 0;
-                    statusEl.innerText = "RECORDING...";
-                    statusEl.className = "status recording";
-                } else {
-                    noMotionCount++;
-                }
-            }
+            # Reset state for next gesture
+            sequence = []
+            cooldown = COOLDOWN_FRAMES
+            no_motion = 0
 
-            // 5. Trigger Inference
-            if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
-                statusEl.innerText = "PROCESSING...";
-                statusEl.className = "status";
+    # UI Display
+    cv2.rectangle(frame, (0,0), (350, 120), (0,0,0), -1)
+    cv2.putText(frame, f"PRED: {prediction}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+    cv2.putText(frame, f"CONF: {confidence:.2f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1)
+    
+    cv2.imshow("FSL Dynamic Inference", frame)
+    if cv2.waitKey(1) & 0xFF == 27: break
 
-                // Padding logic: repeat last frame
-                let seqArr = [...sequence];
-                const lastFrame = seqArr[seqArr.length - 1];
-                while (seqArr.length < SEQ_LEN) {
-                    seqArr.push([...lastFrame]);
-                }
-                if (seqArr.length > SEQ_LEN) {
-                    seqArr = seqArr.slice(-SEQ_LEN);
-                }
-
-                // Normalization
-                const normalized = seqArr.map(frame => 
-                    frame.map((v, i) => (v - normMean[i]) / (normStd[i] + 1e-6))
-                );
-
-                const tensor = new ort.Tensor("float32", Float32Array.from(normalized.flat()), [1, SEQ_LEN, VECTOR_LEN]);
-
-                session.run({ [inputName]: tensor }).then(out => {
-                    const probs = softmax(Array.from(out[outputName].data));
-                    const idx = probs.indexOf(Math.max(...probs));
-                    const confidence = probs[idx];
-
-                    if (confidence >= CONF_THRESHOLD) {
-                        document.getElementById("pred").innerText = LABELS[idx];
-                        document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
-                    } else {
-                        document.getElementById("pred").innerText = "UNCERTAIN";
-                        document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
-                    }
-                });
-
-                // Reset
-                sequence = [];
-                noMotionCount = 0;
-                cooldown = COOLDOWN_FRAMES;
-            }
-        });
-
-        const camera = new Camera(video, {
-            onFrame: async () => { await hands.send({image: video}); },
-            width: 640, height: 480
-        });
-
-        loadAssets().then(() => camera.start());
-    </script>
-</body>
-</html>
+cap.release()
+cv2.destroyAllWindows()
