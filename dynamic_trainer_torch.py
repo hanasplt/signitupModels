@@ -77,18 +77,32 @@ y = np.array(y)
 print("Final feature shape:", X.shape)
 
 # =========================================================
-# 3. NORMALIZATION
+# 3. NORMALIZATION (FIXED FOR WEB APP COMPATIBILITY)
 # =========================================================
 
-mean = X.mean(axis=(0,1), keepdims=True)
-std = X.std(axis=(0,1), keepdims=True) + 1e-6
+# Calculate mean and std across all samples and all frames (axis 0 and 1)
+# This results in one value per feature (89 total)
+mean = X.mean(axis=(0, 1)) 
+std = X.std(axis=(0, 1)) + 1e-6
+
+# Apply normalization to the training data
 X = (X - mean) / std
 
-np.save("web_demo/norm_mean.npy", mean)
-np.save("web_demo/norm_std.npy", std)
+# Save as .npy for Python/Research use
+np.save(os.path.join(SAVE_DIR, "norm_mean.npy"), mean)
+np.save(os.path.join(SAVE_DIR, "norm_std.npy"), std)
 
-np.savetxt("web_demo/norm_mean.json", mean.flatten(), delimiter=",")
-np.savetxt("web_demo/norm_std.json", std.flatten(), delimiter=",")
+# Save as .json for the Web App (ONNX Runtime)
+# We use .tolist() to ensure it is a clean JSON array
+import json
+
+with open(os.path.join(SAVE_DIR, "norm_mean.json"), "w") as f:
+    json.dump(mean.tolist(), f)
+
+with open(os.path.join(SAVE_DIR, "norm_std.json"), "w") as f:
+    json.dump(std.tolist(), f)
+
+print(f"✅ Normalization assets saved to {SAVE_DIR}")
 
 # =========================================================
 # 4. LABEL ENCODING
