@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>FSL Stable Inference (ONNX)</title>
+    <title>FSL Kalman-Stabilized App</title>
     <style>
         body { margin:0; background:#111; color:#0f0; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
         #wrap { position:relative; width:640px; height:480px; margin-top: 20px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
@@ -36,27 +36,44 @@
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
 
     <script>
-        /* ================= CONFIG (Stabilized) ================= */
+        /* ================= KALMAN FILTER LOGIC ================= */
+        class KalmanFilter {
+            constructor(R = 0.0055, Q = 0.0001) {
+                this.R = R; // Measurement Noise
+                this.Q = Q; // Process Noise
+                this.x = 0; // Value
+                this.p = 1; // Error covariance
+                this.k = 0; // Kalman gain
+                this.firstRun = true;
+            }
+
+            update(measurement) {
+                if (this.firstRun) {
+                    this.x = measurement;
+                    this.firstRun = false;
+                }
+                this.p = this.p + this.Q;
+                this.k = this.p / (this.p + this.R);
+                this.x = this.x + this.k * (measurement - this.x);
+                this.p = (1 - this.k) * this.p;
+                return this.x;
+            }
+        }
+
+        // Initialize 42 filters (21 landmarks * 2 coordinates)
+        const coordinateFilters = Array.from({ length: 42 }, () => new KalmanFilter());
+
+        /* ================= CONFIG ================= */
         const SEQ_LEN = 50;
         const VECTOR_LEN = 89;
-        
-        const CONF_THRESHOLD = 0.60;
-        const NO_MOTION_REQUIRED = 5;     
-        const COOLDOWN_FRAMES = 15;       
-        const BASE_MOTION_NOISE = 0.004;  // Lowered to detect stops in smoothed data
-        const SMOOTHING_ALPHA = 0.9;     // Heavy smoothing to kill jitter
-        const JUMP_THRESHOLD = 0.1;       // Anti-jitter: Ignore "teleporting" joints
-        const MAX_RECORDING_FRAMES = 80;  // Safety cutoff to force prediction
+        const CONF_THRESHOLD = 0.55;
+        const NO_MOTION_REQUIRED = 3; 
+        const COOLDOWN_FRAMES = 5;
+        const BASE_MOTION_NOISE = 0.005;
 
         let session = null, inputName = null, outputName = null;
-        let LABELS = [];
-        let normMean = null, normStd = null;
-
-        let sequence = [];
-        let prevLm = null;
-        let smoothLm = null;
-        let noMotionCount = 0;
-        let cooldown = 0;
+        let LABELS = [], normMean = null, normStd = null;
+        let sequence = [], prevLm = null, noMotionCount = 0, cooldown = 0;
 
         /* ================= MATH UTILS ================= */
         function softmax(arr) {
@@ -67,13 +84,12 @@
         }
 
         function computeFingerStates(p) {
-            const offset = 0.02; 
             return [
-                p[4*2+1]  < p[3*2+1] - offset ? 1.0 : 0.0, // Thumb
-                p[8*2+1]  < p[6*2+1] - offset ? 1.0 : 0.0, // Index
-                p[12*2+1] < p[10*2+1] - offset ? 1.0 : 0.0, // Middle
-                p[16*2+1] < p[14*2+1] - offset ? 1.0 : 0.0, // Ring
-                p[20*2+1] < p[18*2+1] - offset ? 1.0 : 0.0  // Pinky
+                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,
+                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,
+                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0,
+                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0,
+                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0
             ];
         }
 
@@ -112,8 +128,8 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.7,
-            minTrackingConfidence: 0.7
+            minDetectionConfidence: 0.8,
+            minTrackingConfidence: 0.8
         });
 
         hands.onResults(res => {
@@ -127,9 +143,9 @@
             }
 
             if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
-                prevLm = smoothLm = null;
+                prevLm = null;
                 noMotionCount = 0;
-                if (sequence.length > 0) sequence = []; 
+                sequence = []; 
                 return;
             }
 
@@ -137,65 +153,51 @@
             drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
             drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
 
-            // 1. Flatten Landmarks
-            const lmFlat = [];
-            for (let i = 0; i < 21; i++) { lmFlat.push(hand[i].x, hand[i].y); }
-
-            // 2. Dynamic Smoothing & Vibration Kill
-            if (smoothLm === null) {
-                smoothLm = [...lmFlat];
-            } else {
-                const totalChange = lmFlat.reduce((acc, val, i) => acc + Math.abs(val - smoothLm[i]), 0) / 42;
-
-                // Aggressive Dead-Zone: If movement is below 0.002, force velocity to ZERO
-                if (totalChange < 0.002) {
-                    // Stop updating landmarks entirely to kill the jitter
-                } else {
-                    // Use a lighter alpha (0.7) so it doesn't "trail" or lag behind your hand
-                    const dynamicAlpha = totalChange < 0.01 ? 0.95 : 0.7; 
-                    smoothLm = smoothLm.map((v, i) => dynamicAlpha * v + (1 - dynamicAlpha) * lmFlat[i]);
-                }
+            // 1. Mirror and Apply Kalman Filter
+            const filteredLm = [];
+            for (let i = 0; i < 21; i++) {
+                // Mirror X, use raw Y
+                const rawX = 1.0 - hand[i].x;
+                const rawY = hand[i].y;
+                
+                // Update X and Y through their respective Kalman filters
+                filteredLm.push(coordinateFilters[i*2].update(rawX));
+                filteredLm.push(coordinateFilters[i*2 + 1].update(rawY));
             }
 
-            // 3. Velocity & Motion
+            // 2. Velocity & Motion Logic
             let vel = new Array(42).fill(0);
             let motion = 0;
             if (prevLm !== null) {
-                vel = smoothLm.map((v, i) => v - prevLm[i]);
+                vel = filteredLm.map((v, i) => v - prevLm[i]);
                 motion = vel.reduce((a, b) => a + Math.abs(b), 0) / 42;
             }
 
-            const fstates = computeFingerStates(smoothLm);
-            const semanticFrame = [...smoothLm, ...vel, ...fstates];
-            prevLm = [...smoothLm];
+            const fstates = computeFingerStates(filteredLm);
+            const semanticFrame = [...filteredLm, ...vel, ...fstates];
+            prevLm = [...filteredLm];
 
-            // 4. Recording Logic
+            // 3. Precise Recording Logic
             const statusEl = document.getElementById("status");
-
-            if (motion > BASE_MOTION_NOISE && sequence.length < MAX_RECORDING_FRAMES) {
+            if (motion > BASE_MOTION_NOISE && sequence.length < 50) {
                 sequence.push(semanticFrame);
                 noMotionCount = 0;
-                // Removed the (sequence.length) counter
-                statusEl.innerText = "RECORDING MOVEMENT..."; 
+                statusEl.innerText = "RECORDING...";
                 statusEl.className = "status recording";
             } else {
                 noMotionCount++;
             }
 
-            // 5. Trigger Inference (Stillness OR Safety Limit)
-            // This will trigger automatically once you stop moving for NO_MOTION_REQUIRED frames
-            if ((noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 12) || sequence.length >= MAX_RECORDING_FRAMES) {
-                statusEl.innerText = "ANALYZING GESTURE...";
+            // 4. Trigger Inference
+            if ((noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 10) || sequence.length >= 80) {
+                statusEl.innerText = "ANALYZING...";
                 statusEl.className = "status";
 
                 let seqArr = [...sequence];
                 const lastFrame = seqArr[seqArr.length - 1];
-                
-                // Pad/Trim to match the LSTM's required SEQ_LEN (50)
                 while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
                 if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
 
-                // Normalize using the JSON assets we fixed earlier
                 const normalized = seqArr.map(frame => 
                     frame.map((v, i) => (v - normMean[i]) / (normStd[i] + 1e-6))
                 );
@@ -207,19 +209,11 @@
                     const idx = probs.indexOf(Math.max(...probs));
                     const confidence = probs[idx];
 
-                    if (confidence >= CONF_THRESHOLD) {
-                        document.getElementById("pred").innerText = LABELS[idx];
-                        document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
-                    } else {
-                        document.getElementById("pred").innerText = "UNCERTAIN";
-                        document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
-                    }
-                    
-                    // Brief status update after prediction
+                    document.getElementById("pred").innerText = confidence >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
+                    document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
                     statusEl.innerText = "READY";
                 });
 
-                // Reset for next gesture
                 sequence = [];
                 noMotionCount = 0;
                 cooldown = COOLDOWN_FRAMES;
