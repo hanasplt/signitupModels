@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>FSL Kalman-Stabilized App</title>
+    <title>FSL Stable Inference (A-Z, 1-20)</title>
     <style>
         body { margin:0; background:#111; color:#0f0; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
         #wrap { position:relative; width:640px; height:480px; margin-top: 20px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
@@ -38,42 +38,35 @@
     <script>
         /* ================= KALMAN FILTER LOGIC ================= */
         class KalmanFilter {
-            constructor(R = 0.0055, Q = 0.0001) {
-                this.R = R; // Measurement Noise
-                this.Q = Q; // Process Noise
-                this.x = 0; // Value
-                this.p = 1; // Error covariance
-                this.k = 0; // Kalman gain
-                this.firstRun = true;
+            constructor(R = 0.008, Q = 0.0001) { 
+                this.R = R; this.Q = Q; this.x = 0; this.p = 1; this.k = 0; this.firstRun = true;
             }
-
-            update(measurement) {
-                if (this.firstRun) {
-                    this.x = measurement;
-                    this.firstRun = false;
-                }
-                this.p = this.p + this.Q;
+            update(m) {
+                if (this.firstRun) { this.x = m; this.firstRun = false; }
+                this.p += this.Q;
                 this.k = this.p / (this.p + this.R);
-                this.x = this.x + this.k * (measurement - this.x);
-                this.p = (1 - this.k) * this.p;
+                this.x += this.k * (m - this.x);
+                this.p *= (1 - this.k);
                 return this.x;
             }
         }
 
-        // Initialize 42 filters (21 landmarks * 2 coordinates)
         const coordinateFilters = Array.from({ length: 42 }, () => new KalmanFilter());
 
         /* ================= CONFIG ================= */
         const SEQ_LEN = 50;
         const VECTOR_LEN = 89;
-        const CONF_THRESHOLD = 0.55;
-        const NO_MOTION_REQUIRED = 3; 
-        const COOLDOWN_FRAMES = 5;
-        const BASE_MOTION_NOISE = 0.005;
+        const CONF_THRESHOLD = 0.45;
+        const COOLDOWN_FRAMES = 5;        
+        const START_MOTION_THRESHOLD = 0.003; 
+        const STOP_MOTION_THRESHOLD = 0.0012; 
+        const GRACE_PERIOD = 5;               
+        const POST_MOTION_FRAMES = 2; // Extra frames to capture the "Final Pose"
 
         let session = null, inputName = null, outputName = null;
         let LABELS = [], normMean = null, normStd = null;
-        let sequence = [], prevLm = null, noMotionCount = 0, cooldown = 0;
+        let sequence = [], prevLm = null, stillFrames = 0, cooldown = 0;
+        let isPostCapture = false, postCaptureCount = 0;
 
         /* ================= MATH UTILS ================= */
         function softmax(arr) {
@@ -108,44 +101,26 @@
                 session = await ort.InferenceSession.create("./gesture_lstm.onnx");
                 inputName = session.inputNames[0];
                 outputName = session.outputNames[0];
-                document.getElementById("status").innerText = "Ready - Show hand";
-                document.getElementById("pred").innerText = "WAITING";
-            } catch (e) {
-                document.getElementById("status").innerText = "Error Loading Assets";
-                console.error(e);
-            }
+                document.getElementById("status").innerText = "Ready";
+            } catch (e) { document.getElementById("status").innerText = "Error"; }
         }
 
         /* ================= MEDIAPIPE LOOP ================= */
         const video = document.getElementById("video");
         const canvas = document.getElementById("canvas");
         const ctx = canvas.getContext("2d");
+        const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}` });
 
-        const hands = new Hands({
-            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
-        });
-
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.8,
-            minTrackingConfidence: 0.8
-        });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
 
         hands.onResults(res => {
             ctx.clearRect(0, 0, 640, 480);
             if (!session || !normMean) return;
-            
-            if (cooldown > 0) {
-                cooldown--;
-                document.getElementById("status").innerText = "Cooling Down...";
-                return;
-            }
+            if (cooldown > 0) { cooldown--; return; }
 
             if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
-                prevLm = null;
-                noMotionCount = 0;
-                sequence = []; 
+                sequence = []; prevLm = null; stillFrames = 0; isPostCapture = false;
+                document.getElementById("status").innerText = "READY";
                 return;
             }
 
@@ -153,78 +128,82 @@
             drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
             drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
 
-            // 1. Mirror and Apply Kalman Filter
             const filteredLm = [];
             for (let i = 0; i < 21; i++) {
-                // Mirror X, use raw Y
-                const rawX = 1.0 - hand[i].x;
-                const rawY = hand[i].y;
-                
-                // Update X and Y through their respective Kalman filters
-                filteredLm.push(coordinateFilters[i*2].update(rawX));
-                filteredLm.push(coordinateFilters[i*2 + 1].update(rawY));
+                filteredLm.push(coordinateFilters[i*2].update(1.0 - hand[i].x));
+                filteredLm.push(coordinateFilters[i*2 + 1].update(hand[i].y));
             }
 
-            // 2. Velocity & Motion Logic
-            let vel = new Array(42).fill(0);
             let motion = 0;
-            if (prevLm !== null) {
+            let vel = new Array(42).fill(0);
+            if (prevLm) {
+                // FINGER-ONLY MOTION: Check movement of tips relative to wrist
+                for (let i = 2; i < 21; i++) {
+                    const dx = (filteredLm[i*2] - filteredLm[0]) - (prevLm[i*2] - prevLm[0]);
+                    const dy = (filteredLm[i*2+1] - filteredLm[1]) - (prevLm[i*2+1] - prevLm[1]);
+                    motion += (Math.abs(dx) + Math.abs(dy));
+                }
+                motion /= 19;
                 vel = filteredLm.map((v, i) => v - prevLm[i]);
-                motion = vel.reduce((a, b) => a + Math.abs(b), 0) / 42;
             }
+            prevLm = [...filteredLm];
 
             const fstates = computeFingerStates(filteredLm);
             const semanticFrame = [...filteredLm, ...vel, ...fstates];
-            prevLm = [...filteredLm];
-
-            // 3. Precise Recording Logic
             const statusEl = document.getElementById("status");
-            if (motion > BASE_MOTION_NOISE && sequence.length < 50) {
-                sequence.push(semanticFrame);
-                noMotionCount = 0;
-                statusEl.innerText = "RECORDING...";
-                statusEl.className = "status recording";
+
+            if (sequence.length === 0) {
+                if (motion > START_MOTION_THRESHOLD) {
+                    sequence.push(semanticFrame);
+                    statusEl.innerText = "RECORDING...";
+                    statusEl.className = "status recording";
+                }
             } else {
-                noMotionCount++;
-            }
+                sequence.push(semanticFrame);
 
-            // 4. Trigger Inference
-            if ((noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 10) || sequence.length >= 80) {
-                statusEl.innerText = "ANALYZING...";
-                statusEl.className = "status";
+                if (!isPostCapture) {
+                    if (motion < STOP_MOTION_THRESHOLD) {
+                        stillFrames++;
+                        if (stillFrames >= GRACE_PERIOD) {
+                            isPostCapture = true;
+                            postCaptureCount = 0;
+                        }
+                    } else { stillFrames = 0; }
+                } else {
+                    // This part captures the "Final Pose" for 14/16 distinction
+                    postCaptureCount++;
+                    statusEl.innerText = "HOLD POSE...";
+                }
 
-                let seqArr = [...sequence];
-                const lastFrame = seqArr[seqArr.length - 1];
-                while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
-                if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
+                // Final trigger
+                if (postCaptureCount >= POST_MOTION_FRAMES || sequence.length >= 80) {
+                    statusEl.innerText = "ANALYZING...";
+                    
+                    let seqArr = [...sequence];
+                    const lastFrame = seqArr[seqArr.length - 1];
+                    while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
+                    if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
 
-                const normalized = seqArr.map(frame => 
-                    frame.map((v, i) => (v - normMean[i]) / (normStd[i] + 1e-6))
-                );
+                    const normalized = seqArr.map(frame => 
+                        frame.map((v, i) => (v - normMean[i]) / (normStd[i] + 1e-6))
+                    );
 
-                const tensor = new ort.Tensor("float32", Float32Array.from(normalized.flat()), [1, SEQ_LEN, VECTOR_LEN]);
+                    const tensor = new ort.Tensor("float32", Float32Array.from(normalized.flat()), [1, SEQ_LEN, VECTOR_LEN]);
 
-                session.run({ [inputName]: tensor }).then(out => {
-                    const probs = softmax(Array.from(out[outputName].data));
-                    const idx = probs.indexOf(Math.max(...probs));
-                    const confidence = probs[idx];
+                    session.run({ [inputName]: tensor }).then(out => {
+                        const probs = softmax(Array.from(out[outputName].data));
+                        const idx = probs.indexOf(Math.max(...probs));
+                        document.getElementById("pred").innerText = probs[idx] >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
+                        document.getElementById("conf").innerText = `CONF: ${probs[idx].toFixed(2)}`;
+                    });
 
-                    document.getElementById("pred").innerText = confidence >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
-                    document.getElementById("conf").innerText = `CONF: ${confidence.toFixed(2)}`;
-                    statusEl.innerText = "READY";
-                });
-
-                sequence = [];
-                noMotionCount = 0;
-                cooldown = COOLDOWN_FRAMES;
+                    sequence = []; stillFrames = 0; isPostCapture = false; postCaptureCount = 0;
+                    cooldown = COOLDOWN_FRAMES;
+                }
             }
         });
 
-        const camera = new Camera(video, {
-            onFrame: async () => { await hands.send({image: video}); },
-            width: 640, height: 480
-        });
-
+        const camera = new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 });
         loadAssets().then(() => camera.start());
     </script>
 </body>
