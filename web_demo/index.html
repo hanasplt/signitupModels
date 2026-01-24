@@ -5,9 +5,11 @@
     <title>FSL Stable Inference (A-Z, 1-20)</title>
     <style>
         body { margin:0; background:#111; color:#0f0; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
-        #wrap { position:relative; width:640px; height:480px; margin-top: 20px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
-        video, canvas { position:absolute; top:0; left:0; transform:scaleX(-1); }
-        .ui-panel { width: 640px; background: #222; padding: 15px; border-radius: 0 0 10px 10px; border: 1px solid #333; text-align: center; }
+        #display-container { display: flex; gap: 10px; margin-top: 20px; }
+        .view-wrap { position:relative; width:640px; height:480px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
+        #video, #canvas { position:absolute; top:0; left:0; transform:scaleX(-1); }
+        #grayscaleCanvas { position:absolute; top:0; left:0; transform:scaleX(-1); filter: grayscale(100%); }
+        .ui-panel { width: 1290px; background: #222; padding: 15px; border-radius: 0 0 10px 10px; border: 1px solid #333; text-align: center; margin-top: 10px; }
         #pred { font-size: 2.8em; font-weight: bold; color: #0f0; text-shadow: 0 0 10px #0f0; margin: 5px 0; }
         #conf { color: #ff0; font-size: 1.2em; font-family: monospace; }
         #status { color: #888; font-size: 0.9em; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px; height: 1.2em; }
@@ -19,9 +21,14 @@
 <body>
     <h2>FSL Dynamic Gesture Recognition</h2>
 
-    <div id="wrap">
-        <video id="video" width="640" height="480" autoplay playsinline></video>
-        <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="display-container">
+        <div class="view-wrap">
+            <video id="video" width="640" height="480" autoplay playsinline></video>
+            <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+        <div class="view-wrap">
+            <canvas id="grayscaleCanvas" width="640" height="480"></canvas>
+        </div>
     </div>
 
     <div class="ui-panel">
@@ -36,37 +43,18 @@
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
 
     <script>
-        /* ================= KALMAN FILTER LOGIC ================= */
-        class KalmanFilter {
-            constructor(R = 0.008, Q = 0.0001) { 
-                this.R = R; this.Q = Q; this.x = 0; this.p = 1; this.k = 0; this.firstRun = true;
-            }
-            update(m) {
-                if (this.firstRun) { this.x = m; this.firstRun = false; }
-                this.p += this.Q;
-                this.k = this.p / (this.p + this.R);
-                this.x += this.k * (m - this.x);
-                this.p *= (1 - this.k);
-                return this.x;
-            }
-        }
-
-        const coordinateFilters = Array.from({ length: 42 }, () => new KalmanFilter());
-
-        /* ================= CONFIG ================= */
+        /* ================= CONFIG (Synced with Python) ================= */
         const SEQ_LEN = 50;
         const VECTOR_LEN = 89;
-        const CONF_THRESHOLD = 0.45;
-        const COOLDOWN_FRAMES = 5;        
-        const START_MOTION_THRESHOLD = 0.003; 
-        const STOP_MOTION_THRESHOLD = 0.0012; 
-        const GRACE_PERIOD = 5;               
-        const POST_MOTION_FRAMES = 2; // Extra frames to capture the "Final Pose"
+        const CONF_THRESHOLD = 0.65; // Increased to match Python's stability
+        const COOLDOWN_FRAMES = 15;   // Matched Python
+        const BASE_MOTION_NOISE = 0.003; 
+        const NO_MOTION_REQUIRED = 8; 
+        const SMOOTHING_ALPHA = 0.6; // EMA Alpha from Python
 
         let session = null, inputName = null, outputName = null;
         let LABELS = [], normMean = null, normStd = null;
-        let sequence = [], prevLm = null, stillFrames = 0, cooldown = 0;
-        let isPostCapture = false, postCaptureCount = 0;
+        let sequence = [], prevSmoothLm = null, noMotionCount = 0, cooldown = 0;
 
         /* ================= MATH UTILS ================= */
         function softmax(arr) {
@@ -77,12 +65,13 @@
         }
 
         function computeFingerStates(p) {
+            // Simplified Y-coord check as used in your Python script
             return [
-                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,
-                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,
-                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0,
-                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0,
-                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0
+                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,  // Thumb
+                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,  // Index
+                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0, // Middle
+                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0, // Ring
+                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0  // Pinky
             ];
         }
 
@@ -102,25 +91,31 @@
                 inputName = session.inputNames[0];
                 outputName = session.outputNames[0];
                 document.getElementById("status").innerText = "Ready";
-            } catch (e) { document.getElementById("status").innerText = "Error"; }
+            } catch (e) { document.getElementById("status").innerText = "Error Loading Assets"; }
         }
 
         /* ================= MEDIAPIPE LOOP ================= */
         const video = document.getElementById("video");
         const canvas = document.getElementById("canvas");
+        const gCanvas = document.getElementById("grayscaleCanvas");
         const ctx = canvas.getContext("2d");
-        const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}` });
+        const gCtx = gCanvas.getContext("2d");
 
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+        const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
 
         hands.onResults(res => {
             ctx.clearRect(0, 0, 640, 480);
+            gCtx.clearRect(0, 0, 640, 480);
+            gCtx.drawImage(video, 0, 0, 640, 480);
+
             if (!session || !normMean) return;
             if (cooldown > 0) { cooldown--; return; }
 
             if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
-                sequence = []; prevLm = null; stillFrames = 0; isPostCapture = false;
+                sequence = []; prevSmoothLm = null; noMotionCount = 0;
                 document.getElementById("status").innerText = "READY";
+                document.getElementById("status").className = "";
                 return;
             }
 
@@ -128,82 +123,84 @@
             drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
             drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
 
-            const filteredLm = [];
+            // 1. EMA Smoothing (Replacing Kalman)
+            const currentLm = [];
             for (let i = 0; i < 21; i++) {
-                filteredLm.push(coordinateFilters[i*2].update(1.0 - hand[i].x));
-                filteredLm.push(coordinateFilters[i*2 + 1].update(hand[i].y));
+                currentLm.push(1.0 - hand[i].x); // Mirroring X
+                currentLm.push(hand[i].y);
             }
 
-            let motion = 0;
+            let smoothLm;
+            if (!prevSmoothLm) {
+                smoothLm = currentLm;
+            } else {
+                smoothLm = currentLm.map((val, i) => 
+                    SMOOTHING_ALPHA * prevSmoothLm[i] + (1 - SMOOTHING_ALPHA) * val
+                );
+            }
+
+            // 2. Velocity & Motion Logic
             let vel = new Array(42).fill(0);
-            if (prevLm) {
-                // FINGER-ONLY MOTION: Check movement of tips relative to wrist
-                for (let i = 2; i < 21; i++) {
-                    const dx = (filteredLm[i*2] - filteredLm[0]) - (prevLm[i*2] - prevLm[0]);
-                    const dy = (filteredLm[i*2+1] - filteredLm[1]) - (prevLm[i*2+1] - prevLm[1]);
-                    motion += (Math.abs(dx) + Math.abs(dy));
-                }
-                motion /= 19;
-                vel = filteredLm.map((v, i) => v - prevLm[i]);
+            let motion = 0;
+            if (prevSmoothLm) {
+                vel = smoothLm.map((v, i) => v - prevSmoothLm[i]);
+                motion = vel.reduce((acc, v) => acc + Math.abs(v), 0) / 42;
             }
-            prevLm = [...filteredLm];
+            prevSmoothLm = [...smoothLm];
 
-            const fstates = computeFingerStates(filteredLm);
-            const semanticFrame = [...filteredLm, ...vel, ...fstates];
+            const fstates = computeFingerStates(smoothLm);
+            const semanticFrame = [...smoothLm, ...vel, ...fstates];
             const statusEl = document.getElementById("status");
 
-            if (sequence.length === 0) {
-                if (motion > START_MOTION_THRESHOLD) {
-                    sequence.push(semanticFrame);
-                    statusEl.innerText = "RECORDING...";
-                    statusEl.className = "status recording";
-                }
-            } else {
+            // 3. Recording Logic (Synced with Python)
+            if (motion > BASE_MOTION_NOISE) {
                 sequence.push(semanticFrame);
+                noMotionCount = 0;
+                statusEl.innerText = "RECORDING...";
+                statusEl.className = "status recording";
+            } else {
+                if (sequence.length > 0) noMotionCount++;
+            }
 
-                if (!isPostCapture) {
-                    if (motion < STOP_MOTION_THRESHOLD) {
-                        stillFrames++;
-                        if (stillFrames >= GRACE_PERIOD) {
-                            isPostCapture = true;
-                            postCaptureCount = 0;
-                        }
-                    } else { stillFrames = 0; }
-                } else {
-                    // This part captures the "Final Pose" for 14/16 distinction
-                    postCaptureCount++;
-                    statusEl.innerText = "HOLD POSE...";
+            // 4. Trigger Inference
+            if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
+                statusEl.innerText = "ANALYZING...";
+                
+                // Padding: Repeat last frame context
+                let seqArr = [...sequence];
+                const lastFrame = seqArr[seqArr.length - 1];
+                while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
+                if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
+
+                // Vectorized Normalization (NumPy style)
+                const flatData = new Float32Array(SEQ_LEN * VECTOR_LEN);
+                for (let i = 0; i < SEQ_LEN; i++) {
+                    for (let j = 0; j < VECTOR_LEN; j++) {
+                        flatData[i * VECTOR_LEN + j] = (seqArr[i][j] - normMean[j]) / (normStd[j] + 1e-6);
+                    }
                 }
 
-                // Final trigger
-                if (postCaptureCount >= POST_MOTION_FRAMES || sequence.length >= 80) {
-                    statusEl.innerText = "ANALYZING...";
+                const tensor = new ort.Tensor("float32", flatData, [1, SEQ_LEN, VECTOR_LEN]);
+
+                session.run({ [inputName]: tensor }).then(out => {
+                    const probs = softmax(Array.from(out[outputName].data));
+                    const idx = probs.indexOf(Math.max(...probs));
+                    const conf = probs[idx];
                     
-                    let seqArr = [...sequence];
-                    const lastFrame = seqArr[seqArr.length - 1];
-                    while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
-                    if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
+                    document.getElementById("pred").innerText = conf >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
+                    document.getElementById("conf").innerText = `CONF: ${conf.toFixed(2)}`;
+                });
 
-                    const normalized = seqArr.map(frame => 
-                        frame.map((v, i) => (v - normMean[i]) / (normStd[i] + 1e-6))
-                    );
-
-                    const tensor = new ort.Tensor("float32", Float32Array.from(normalized.flat()), [1, SEQ_LEN, VECTOR_LEN]);
-
-                    session.run({ [inputName]: tensor }).then(out => {
-                        const probs = softmax(Array.from(out[outputName].data));
-                        const idx = probs.indexOf(Math.max(...probs));
-                        document.getElementById("pred").innerText = probs[idx] >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
-                        document.getElementById("conf").innerText = `CONF: ${probs[idx].toFixed(2)}`;
-                    });
-
-                    sequence = []; stillFrames = 0; isPostCapture = false; postCaptureCount = 0;
-                    cooldown = COOLDOWN_FRAMES;
-                }
+                // Reset
+                sequence = []; noMotionCount = 0;
+                cooldown = COOLDOWN_FRAMES;
             }
         });
 
-        const camera = new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 });
+        const camera = new Camera(video, { 
+            onFrame: async () => { await hands.send({image: video}); }, 
+            width: 640, height: 480 
+        });
         loadAssets().then(() => camera.start());
     </script>
 </body>
