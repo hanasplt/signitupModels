@@ -6,15 +6,15 @@ import time
 DATA_DIR = './data_videos'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-GESTURE_CLASSES = ['15']  # Add more gesture names as needed
-VIDEOS_PER_CLASS = 25
+GESTURE_CLASSES = ['Ñ']  # Add more gesture names as needed
+VIDEOS_PER_CLASS = 5
 VIDEO_DURATION = 2  # seconds per video
 FPS = 30
 
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("❌ Cannot access camera.")
-    exit()
+    exit()  
 
 print("Camera initialized. Press 's' to start collecting or 'q' to quit.")
 
