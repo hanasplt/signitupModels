@@ -7,7 +7,7 @@ DATA_DIR = './static_models/static_data_images'
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # You can expand this list with 'A', 'B', 'NG', '1', '2', etc.
-GESTURE_CLASSES = ['E', 'I', 'O', 'U'] 
+GESTURE_CLASSES = ['2V',] 
 IMAGES_PER_CLASS = 100
 FPS_DELAY = 100 # Adjust delay between frames (ms) if needed
 
