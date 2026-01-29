@@ -2,39 +2,139 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>SignItUp - Static Inference</title>
+    <title>SignItUp - Dual Mode Recognition</title>
     <style>
-        body { margin:0; background:#111; color:#0f0; font-family:'Courier New', monospace; display:flex; flex-direction:column; align-items:center; padding-top: 20px;}
-        h2 { letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; }
+        body { 
+            margin:0; 
+            background:#111; 
+            color:#0f0; 
+            font-family:'Courier New', monospace; 
+            display:flex; 
+            flex-direction:column; 
+            align-items:center; 
+            padding-top: 20px;
+        }
         
-        #display-container { display: flex; gap: 10px; justify-content: center; transform: scaleX(-1); }
+        h2 { 
+            letter-spacing: 2px; 
+            text-transform: uppercase; 
+            margin-bottom: 10px; 
+        }
+        
+        #mode-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .mode-btn {
+            background: #222;
+            color: #0f0;
+            border: 2px solid #0f0;
+            padding: 10px 30px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: all 0.3s;
+        }
+        
+        .mode-btn:hover {
+            background: #0f0;
+            color: #111;
+        }
+        
+        .mode-btn.active {
+            background: #0f0;
+            color: #111;
+            font-weight: bold;
+        }
+        
+        #display-container { 
+            display: flex; 
+            gap: 10px; 
+            justify-content: center; 
+            transform: scaleX(-1); 
+        }
         
         .view-wrap { 
-            position:relative; width:640px; height:480px; 
-            border: 2px solid #333; border-radius: 8px; overflow: hidden; 
+            position:relative; 
+            width:640px; 
+            height:480px; 
+            border: 2px solid #333; 
+            border-radius: 8px; 
+            overflow: hidden; 
             background: #000;
         }
         
-        /* NO MIRRORING - Display as-is so landmarks align with visual */
         #video, #canvas { 
-            position:absolute; top:0; left:0;
-            width: 640px; height: 480px;
+            position:absolute; 
+            top:0; 
+            left:0;
+            width: 640px; 
+            height: 480px;
         }
 
         .ui-panel { 
-            width: 640px; background: #1a1a1a; padding: 20px; 
-            border-radius: 0 0 10px 10px; border: 1px solid #333; 
-            text-align: center; margin-top: 10px; box-sizing: border-box;
+            width: 640px; 
+            background: #1a1a1a; 
+            padding: 20px; 
+            border-radius: 0 0 10px 10px; 
+            border: 1px solid #333; 
+            text-align: center; 
+            margin-top: 10px; 
+            box-sizing: border-box;
         }
         
-        #pred { font-size: 3.5em; font-weight: bold; color: #0f0; text-shadow: 0 0 15px #0f0; margin: 10px 0; }
-        #status { color: #888; font-size: 0.9em; text-transform: uppercase; letter-spacing: 2px; height: 1.2em; margin-bottom: 5px;}
-        #info { color: #444; font-size: 0.7em; }
+        #pred { 
+            font-size: 3.5em; 
+            font-weight: bold; 
+            color: #0f0; 
+            text-shadow: 0 0 15px #0f0; 
+            margin: 10px 0; 
+        }
+        
+        #conf { 
+            color: #ff0; 
+            font-size: 1.2em; 
+            font-family: monospace; 
+            margin: 5px 0;
+        }
+        
+        #status { 
+            color: #888; 
+            font-size: 0.9em; 
+            text-transform: uppercase; 
+            letter-spacing: 2px; 
+            height: 1.2em; 
+            margin-bottom: 5px;
+        }
+        
+        #info { 
+            color: #444; 
+            font-size: 0.7em; 
+        }
+        
+        .recording { 
+            color: #f00 !important; 
+            font-weight: bold; 
+            animation: blink 1s infinite; 
+        }
+        
+        @keyframes blink { 
+            50% { opacity: 0.5; } 
+        }
     </style>
 </head>
 
 <body>
-    <h2>SignItUp: Alphabet & Numbers</h2>
+    <h2>SignItUp: Alphabet & Numbers Recognition</h2>
+    
+    <div id="mode-selector">
+        <button class="mode-btn active" onclick="switchMode('static')">STATIC MODE (Letters)</button>
+        <button class="mode-btn" onclick="switchMode('dynamic')">DYNAMIC MODE (Gestures)</button>
+    </div>
 
     <div id="display-container">
         <div class="view-wrap">
@@ -46,7 +146,8 @@
     <div class="ui-panel">
         <div id="status">System Initializing...</div>
         <div id="pred">---</div>
-        <div id="info">Inference Engine: ONNX Runtime Web | Mode: Static Hand Pose</div>
+        <div id="conf" style="display:none;">CONF: 0.00</div>
+        <div id="info">Inference Engine: ONNX Runtime Web</div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
@@ -60,10 +161,8 @@
         const ctx = canvas.getContext("2d");
         const predEl = document.getElementById("pred");
         const statusEl = document.getElementById("status");
-
-        let ortSession = null;
-        let labelsDict = {};
-        const CONFIDENCE_THRESHOLD = 0.75;
+        const confEl = document.getElementById("conf");
+        const infoEl = document.getElementById("info");
 
         // Create a temporary canvas for flipping frames before MediaPipe processing
         const tempCanvas = document.createElement('canvas');
@@ -71,28 +170,69 @@
         tempCanvas.height = 480;
         const tempCtx = tempCanvas.getContext('2d');
 
-        // 1. Load Model and Labels
-        async function loadAssets() {
+        // ==================== SHARED VARIABLES ====================
+        let currentMode = 'static';
+        let hands = null;
+        let camera = null;
+
+        // ==================== STATIC MODE VARIABLES ====================
+        let staticSession = null;
+        let staticLabels = {};
+
+        // ==================== DYNAMIC MODE VARIABLES ====================
+        const SEQ_LEN = 50;
+        const VECTOR_LEN = 89;
+        const CONF_THRESHOLD = 0.65;
+        const COOLDOWN_FRAMES = 15;
+        const BASE_MOTION_NOISE = 0.003;
+        const NO_MOTION_REQUIRED = 8;
+        const SMOOTHING_ALPHA = 0.6;
+
+        let dynamicSession = null;
+        let dynamicInputName = null;
+        let dynamicOutputName = null;
+        let dynamicLabels = [];
+        let normMean = null;
+        let normStd = null;
+        let sequence = [];
+        let prevSmoothLm = null;
+        let noMotionCount = 0;
+        let cooldown = 0;
+
+        // ==================== UTILITY FUNCTIONS ====================
+        function softmax(arr) {
+            const m = Math.max(...arr);
+            const ex = arr.map(v => Math.exp(v - m));
+            const s = ex.reduce((a, b) => a + b, 0);
+            return ex.map(v => v / s);
+        }
+
+        function computeFingerStates(p) {
+            return [
+                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,  // Thumb
+                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,  // Index
+                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0, // Middle
+                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0, // Ring
+                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0  // Pinky
+            ];
+        }
+
+        // ==================== STATIC MODE FUNCTIONS ====================
+        async function loadStaticAssets() {
             try {
-                const [lRes] = await Promise.all([
-                    fetch(`./labels_static.json?v=${Date.now()}`)
-                ]);
-                labelsDict = await lRes.json();
-                
-                // Initialize ONNX
-                ortSession = await ort.InferenceSession.create("./model_static.onnx");
-                statusEl.innerText = "Ready - Place hand in view";
+                const lRes = await fetch(`./labels_static.json?v=${Date.now()}`);
+                staticLabels = await lRes.json();
+                staticSession = await ort.InferenceSession.create("./model_static.onnx");
+                return true;
             } catch (e) {
-                statusEl.innerText = "Error Loading Assets";
-                console.error(e);
+                console.error("Error loading static assets:", e);
+                return false;
             }
         }
 
-        // 2. Prediction Logic
-        async function runInference(landmarks) {
-            if (!ortSession) return;
+        async function runStaticInference(landmarks) {
+            if (!staticSession) return;
 
-            // Normalization (matching your Python logic)
             const xCoords = landmarks.map(l => l.x);
             const yCoords = landmarks.map(l => l.y);
             const minX = Math.min(...xCoords);
@@ -107,45 +247,131 @@
             const inputTensor = new ort.Tensor('float32', inputData, [1, 42]);
 
             try {
-                // Fetch ONLY output index 0 to avoid the "non-tensor" error
-                const labelOutputName = ortSession.outputNames[0];
-                const results = await ortSession.run(
-                    { [ortSession.inputNames[0]]: inputTensor },
+                const labelOutputName = staticSession.outputNames[0];
+                const results = await staticSession.run(
+                    { [staticSession.inputNames[0]]: inputTensor },
                     [labelOutputName]
                 );
 
                 const predictedIdx = results[labelOutputName].data[0].toString();
-                const char = labelsDict[predictedIdx];
+                const char = staticLabels[predictedIdx];
 
                 if (char) {
                     predEl.innerText = char;
                     statusEl.innerText = "SIGN DETECTED";
                 }
             } catch (err) {
-                console.warn("Inference slip:", err.message);
+                console.warn("Static inference error:", err.message);
             }
         }
 
-        // 3. MediaPipe Loop
-        const hands = new Hands({ 
-            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` 
-        });
+        // ==================== DYNAMIC MODE FUNCTIONS ====================
+        async function loadDynamicAssets() {
+            try {
+                ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
+                const [mRes, sRes, lRes] = await Promise.all([
+                    fetch(`./norm_mean.json?v=${Date.now()}`),
+                    fetch(`./norm_std.json?v=${Date.now()}`),
+                    fetch(`./labels.json?v=${Date.now()}`)
+                ]);
+                normMean = await mRes.json();
+                normStd = await sRes.json();
+                dynamicLabels = await lRes.json();
+                dynamicSession = await ort.InferenceSession.create("./gesture_lstm.onnx");
+                dynamicInputName = dynamicSession.inputNames[0];
+                dynamicOutputName = dynamicSession.outputNames[0];
+                return true;
+            } catch (e) {
+                console.error("Error loading dynamic assets:", e);
+                return false;
+            }
+        }
 
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.75,
-            minTrackingConfidence: 0.7
-        });
+        async function runDynamicInference(hand) {
+            if (!dynamicSession || !normMean) return;
 
-        hands.onResults(res => {
-            // Clear canvas
+            // 1. EMA Smoothing
+            const currentLm = [];
+            for (let i = 0; i < 21; i++) {
+                currentLm.push(1.0 - hand[i].x); // Mirroring X
+                currentLm.push(hand[i].y);
+            }
+
+            let smoothLm;
+            if (!prevSmoothLm) {
+                smoothLm = currentLm;
+            } else {
+                smoothLm = currentLm.map((val, i) => 
+                    SMOOTHING_ALPHA * prevSmoothLm[i] + (1 - SMOOTHING_ALPHA) * val
+                );
+            }
+
+            // 2. Velocity & Motion Logic
+            let vel = new Array(42).fill(0);
+            let motion = 0;
+            if (prevSmoothLm) {
+                vel = smoothLm.map((v, i) => v - prevSmoothLm[i]);
+                motion = vel.reduce((acc, v) => acc + Math.abs(v), 0) / 42;
+            }
+            prevSmoothLm = [...smoothLm];
+
+            const fstates = computeFingerStates(smoothLm);
+            const semanticFrame = [...smoothLm, ...vel, ...fstates];
+
+            // 3. Recording Logic
+            if (motion > BASE_MOTION_NOISE) {
+                sequence.push(semanticFrame);
+                noMotionCount = 0;
+                statusEl.innerText = "RECORDING...";
+                statusEl.className = "recording";
+            } else {
+                if (sequence.length > 0) noMotionCount++;
+            }
+
+            // 4. Trigger Inference
+            if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
+                statusEl.innerText = "ANALYZING...";
+                statusEl.className = "";
+                
+                let seqArr = [...sequence];
+                const lastFrame = seqArr[seqArr.length - 1];
+                while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
+                if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
+
+                const flatData = new Float32Array(SEQ_LEN * VECTOR_LEN);
+                for (let i = 0; i < SEQ_LEN; i++) {
+                    for (let j = 0; j < VECTOR_LEN; j++) {
+                        flatData[i * VECTOR_LEN + j] = (seqArr[i][j] - normMean[j]) / (normStd[j] + 1e-6);
+                    }
+                }
+
+                const tensor = new ort.Tensor("float32", flatData, [1, SEQ_LEN, VECTOR_LEN]);
+
+                try {
+                    const out = await dynamicSession.run({ [dynamicInputName]: tensor });
+                    const probs = softmax(Array.from(out[dynamicOutputName].data));
+                    const idx = probs.indexOf(Math.max(...probs));
+                    const conf = probs[idx];
+                    
+                    predEl.innerText = conf >= CONF_THRESHOLD ? dynamicLabels[idx] : "UNCERTAIN";
+                    confEl.innerText = `CONF: ${conf.toFixed(2)}`;
+                } catch (err) {
+                    console.warn("Dynamic inference error:", err);
+                }
+
+                sequence = [];
+                noMotionCount = 0;
+                cooldown = COOLDOWN_FRAMES;
+            }
+        }
+
+        // ==================== MEDIAPIPE HANDLERS ====================
+        function onStaticResults(res) {
             ctx.clearRect(0, 0, 640, 480);
 
             if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
                 const hand = res.multiHandLandmarks[0];
 
-                // Draw skeleton on the main view
                 ctx.save();
                 ctx.scale(-1, 1);
                 ctx.translate(-640, 0);
@@ -153,28 +379,141 @@
                 drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
                 ctx.restore();
 
-                runInference(hand);
+                runStaticInference(hand);
             } else {
                 predEl.innerText = "---";
                 statusEl.innerText = "WAITING FOR HAND...";
             }
-        });
+        }
 
-        const camera = new Camera(video, { 
-            onFrame: async () => { 
-                // Flip the frame before sending to MediaPipe (matches Python cv2.flip)
-                tempCtx.save();
-                tempCtx.scale(-1, 1);
-                tempCtx.drawImage(video, -640, 0, 640, 480);
-                tempCtx.restore();
+        function onDynamicResults(res) {
+            ctx.clearRect(0, 0, 640, 480);
+
+            if (cooldown > 0) {
+                cooldown--;
+                return;
+            }
+
+            if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
+                sequence = [];
+                prevSmoothLm = null;
+                noMotionCount = 0;
+                statusEl.innerText = "READY";
+                statusEl.className = "";
+                return;
+            }
+
+            const hand = res.multiHandLandmarks[0];
+            
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.translate(-640, 0);
+            drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
+            drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
+            ctx.restore();
+
+            runDynamicInference(hand);
+        }
+
+        // ==================== MODE SWITCHING ====================
+        async function switchMode(mode) {
+            if (currentMode === mode) return;
+
+            currentMode = mode;
+            
+            // Update button states
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Reset display
+            predEl.innerText = "LOADING...";
+            statusEl.innerText = "Switching Mode...";
+            ctx.clearRect(0, 0, 640, 480);
+
+            // Reset dynamic mode variables
+            sequence = [];
+            prevSmoothLm = null;
+            noMotionCount = 0;
+            cooldown = 0;
+
+            if (mode === 'static') {
+                confEl.style.display = 'none';
+                infoEl.innerText = "Inference Engine: ONNX Runtime Web | Mode: Static Hand Pose";
                 
-                // Send the flipped frame to MediaPipe for processing
-                await hands.send({image: tempCanvas});
-            }, 
-            width: 640, height: 480 
-        });
+                if (!staticSession) {
+                    const loaded = await loadStaticAssets();
+                    if (!loaded) {
+                        statusEl.innerText = "Error Loading Static Model";
+                        return;
+                    }
+                }
+                
+                hands.onResults(onStaticResults);
+                statusEl.innerText = "Ready - Place hand in view";
+                predEl.innerText = "---";
+                
+            } else if (mode === 'dynamic') {
+                confEl.style.display = 'block';
+                infoEl.innerText = "Inference Engine: ONNX Runtime Web | Mode: Dynamic Gesture";
+                
+                if (!dynamicSession) {
+                    const loaded = await loadDynamicAssets();
+                    if (!loaded) {
+                        statusEl.innerText = "Error Loading Dynamic Model";
+                        return;
+                    }
+                }
+                
+                hands.onResults(onDynamicResults);
+                statusEl.innerText = "Ready";
+                predEl.innerText = "---";
+            }
+        }
 
-        loadAssets().then(() => camera.start());
+        // ==================== INITIALIZATION ====================
+        async function init() {
+            // Initialize MediaPipe Hands
+            hands = new Hands({ 
+                locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` 
+            });
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.75,
+                minTrackingConfidence: 0.7
+            });
+
+            // Load static model by default
+            const loaded = await loadStaticAssets();
+            if (loaded) {
+                hands.onResults(onStaticResults);
+                statusEl.innerText = "Ready - Place hand in view";
+                predEl.innerText = "---";
+            } else {
+                statusEl.innerText = "Error Loading Assets";
+            }
+
+            // Start camera
+            camera = new Camera(video, { 
+                onFrame: async () => { 
+                    tempCtx.save();
+                    tempCtx.scale(-1, 1);
+                    tempCtx.drawImage(video, -640, 0, 640, 480);
+                    tempCtx.restore();
+                    await hands.send({image: tempCanvas});
+                }, 
+                width: 640, 
+                height: 480 
+            });
+
+            camera.start();
+        }
+
+        // Start the application
+        init();
     </script>
 </body>
 </html>
