@@ -1,206 +1,179 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>FSL Stable Inference (A-Z, 1-20)</title>
+    <title>SignItUp - Static Inference</title>
     <style>
-        body { margin:0; background:#111; color:#0f0; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
-        #display-container { display: flex; gap: 10px; margin-top: 20px; }
-        .view-wrap { position:relative; width:640px; height:480px; border: 3px solid #333; border-radius: 10px; overflow: hidden; }
-        #video, #canvas { position:absolute; top:0; left:0; transform:scaleX(-1); }
-        #grayscaleCanvas { position:absolute; top:0; left:0; transform:scaleX(-1); filter: grayscale(100%); }
-        .ui-panel { width: 1290px; background: #222; padding: 15px; border-radius: 0 0 10px 10px; border: 1px solid #333; text-align: center; margin-top: 10px; }
-        #pred { font-size: 2.8em; font-weight: bold; color: #0f0; text-shadow: 0 0 10px #0f0; margin: 5px 0; }
-        #conf { color: #ff0; font-size: 1.2em; font-family: monospace; }
-        #status { color: #888; font-size: 0.9em; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px; height: 1.2em; }
-        .recording { color: #f00 !important; font-weight: bold; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.5; } }
+        body { margin:0; background:#111; color:#0f0; font-family:'Courier New', monospace; display:flex; flex-direction:column; align-items:center; padding-top: 20px;}
+        h2 { letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; }
+        
+        #display-container { display: flex; gap: 10px; justify-content: center; transform: scaleX(-1); }
+        
+        .view-wrap { 
+            position:relative; width:640px; height:480px; 
+            border: 2px solid #333; border-radius: 8px; overflow: hidden; 
+            background: #000;
+        }
+        
+        /* NO MIRRORING - Display as-is so landmarks align with visual */
+        #video, #canvas { 
+            position:absolute; top:0; left:0;
+            width: 640px; height: 480px;
+        }
+
+        .ui-panel { 
+            width: 640px; background: #1a1a1a; padding: 20px; 
+            border-radius: 0 0 10px 10px; border: 1px solid #333; 
+            text-align: center; margin-top: 10px; box-sizing: border-box;
+        }
+        
+        #pred { font-size: 3.5em; font-weight: bold; color: #0f0; text-shadow: 0 0 15px #0f0; margin: 10px 0; }
+        #status { color: #888; font-size: 0.9em; text-transform: uppercase; letter-spacing: 2px; height: 1.2em; margin-bottom: 5px;}
+        #info { color: #444; font-size: 0.7em; }
     </style>
 </head>
 
 <body>
-    <h2>FSL Dynamic Gesture Recognition</h2>
+    <h2>SignItUp: Alphabet & Numbers</h2>
 
     <div id="display-container">
         <div class="view-wrap">
             <video id="video" width="640" height="480" autoplay playsinline></video>
             <canvas id="canvas" width="640" height="480"></canvas>
         </div>
-        <div class="view-wrap">
-            <canvas id="grayscaleCanvas" width="640" height="480"></canvas>
-        </div>
     </div>
 
     <div class="ui-panel">
-        <div id="pred">INITIALIZING...</div>
-        <div id="conf">CONF: 0.00</div>
-        <div id="status">Loading Assets...</div>
+        <div id="status">System Initializing...</div>
+        <div id="pred">---</div>
+        <div id="info">Inference Engine: ONNX Runtime Web | Mode: Static Hand Pose</div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 
     <script>
-        /* ================= CONFIG (Synced with Python) ================= */
-        const SEQ_LEN = 50;
-        const VECTOR_LEN = 89;
-        const CONF_THRESHOLD = 0.65; // Increased to match Python's stability
-        const COOLDOWN_FRAMES = 15;   // Matched Python
-        const BASE_MOTION_NOISE = 0.003; 
-        const NO_MOTION_REQUIRED = 8; 
-        const SMOOTHING_ALPHA = 0.6; // EMA Alpha from Python
-
-        let session = null, inputName = null, outputName = null;
-        let LABELS = [], normMean = null, normStd = null;
-        let sequence = [], prevSmoothLm = null, noMotionCount = 0, cooldown = 0;
-
-        /* ================= MATH UTILS ================= */
-        function softmax(arr) {
-            const m = Math.max(...arr);
-            const ex = arr.map(v => Math.exp(v - m));
-            const s = ex.reduce((a, b) => a + b, 0);
-            return ex.map(v => v / s);
-        }
-
-        function computeFingerStates(p) {
-            // Simplified Y-coord check as used in your Python script
-            return [
-                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,  // Thumb
-                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,  // Index
-                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0, // Middle
-                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0, // Ring
-                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0  // Pinky
-            ];
-        }
-
-        /* ================= ASSET LOADING ================= */
-        async function loadAssets() {
-            try {
-                ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
-                const [mRes, sRes, lRes] = await Promise.all([
-                    fetch(`./norm_mean.json?v=${Date.now()}`),
-                    fetch(`./norm_std.json?v=${Date.now()}`),
-                    fetch(`./labels.json?v=${Date.now()}`)
-                ]);
-                normMean = await mRes.json();
-                normStd = await sRes.json();
-                LABELS = await lRes.json();
-                session = await ort.InferenceSession.create("./gesture_lstm.onnx");
-                inputName = session.inputNames[0];
-                outputName = session.outputNames[0];
-                document.getElementById("status").innerText = "Ready";
-            } catch (e) { document.getElementById("status").innerText = "Error Loading Assets"; }
-        }
-
-        /* ================= MEDIAPIPE LOOP ================= */
         const video = document.getElementById("video");
         const canvas = document.getElementById("canvas");
-        const gCanvas = document.getElementById("grayscaleCanvas");
         const ctx = canvas.getContext("2d");
-        const gCtx = gCanvas.getContext("2d");
+        const predEl = document.getElementById("pred");
+        const statusEl = document.getElementById("status");
 
-        const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}` });
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        let ortSession = null;
+        let labelsDict = {};
+        const CONFIDENCE_THRESHOLD = 0.75;
+
+        // Create a temporary canvas for flipping frames before MediaPipe processing
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 640;
+        tempCanvas.height = 480;
+        const tempCtx = tempCanvas.getContext('2d');
+
+        // 1. Load Model and Labels
+        async function loadAssets() {
+            try {
+                const [lRes] = await Promise.all([
+                    fetch(`./labels_static.json?v=${Date.now()}`)
+                ]);
+                labelsDict = await lRes.json();
+                
+                // Initialize ONNX
+                ortSession = await ort.InferenceSession.create("./model_static.onnx");
+                statusEl.innerText = "Ready - Place hand in view";
+            } catch (e) {
+                statusEl.innerText = "Error Loading Assets";
+                console.error(e);
+            }
+        }
+
+        // 2. Prediction Logic
+        async function runInference(landmarks) {
+            if (!ortSession) return;
+
+            // Normalization (matching your Python logic)
+            const xCoords = landmarks.map(l => l.x);
+            const yCoords = landmarks.map(l => l.y);
+            const minX = Math.min(...xCoords);
+            const minY = Math.min(...yCoords);
+
+            const inputData = new Float32Array(42);
+            landmarks.forEach((lm, i) => {
+                inputData[i * 2] = lm.x - minX;
+                inputData[i * 2 + 1] = lm.y - minY;
+            });
+
+            const inputTensor = new ort.Tensor('float32', inputData, [1, 42]);
+
+            try {
+                // Fetch ONLY output index 0 to avoid the "non-tensor" error
+                const labelOutputName = ortSession.outputNames[0];
+                const results = await ortSession.run(
+                    { [ortSession.inputNames[0]]: inputTensor },
+                    [labelOutputName]
+                );
+
+                const predictedIdx = results[labelOutputName].data[0].toString();
+                const char = labelsDict[predictedIdx];
+
+                if (char) {
+                    predEl.innerText = char;
+                    statusEl.innerText = "SIGN DETECTED";
+                }
+            } catch (err) {
+                console.warn("Inference slip:", err.message);
+            }
+        }
+
+        // 3. MediaPipe Loop
+        const hands = new Hands({ 
+            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` 
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.75,
+            minTrackingConfidence: 0.7
+        });
 
         hands.onResults(res => {
+            // Clear canvas
             ctx.clearRect(0, 0, 640, 480);
-            gCtx.clearRect(0, 0, 640, 480);
-            gCtx.drawImage(video, 0, 0, 640, 480);
 
-            if (!session || !normMean) return;
-            if (cooldown > 0) { cooldown--; return; }
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                const hand = res.multiHandLandmarks[0];
 
-            if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
-                sequence = []; prevSmoothLm = null; noMotionCount = 0;
-                document.getElementById("status").innerText = "READY";
-                document.getElementById("status").className = "";
-                return;
-            }
+                // Draw skeleton on the main view
+                ctx.save();
+                ctx.scale(-1, 1);
+                ctx.translate(-640, 0);
+                drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 2});
+                drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
+                ctx.restore();
 
-            const hand = res.multiHandLandmarks[0];
-            drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 3});
-            drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
-
-            // 1. EMA Smoothing (Replacing Kalman)
-            const currentLm = [];
-            for (let i = 0; i < 21; i++) {
-                currentLm.push(1.0 - hand[i].x); // Mirroring X
-                currentLm.push(hand[i].y);
-            }
-
-            let smoothLm;
-            if (!prevSmoothLm) {
-                smoothLm = currentLm;
+                runInference(hand);
             } else {
-                smoothLm = currentLm.map((val, i) => 
-                    SMOOTHING_ALPHA * prevSmoothLm[i] + (1 - SMOOTHING_ALPHA) * val
-                );
-            }
-
-            // 2. Velocity & Motion Logic
-            let vel = new Array(42).fill(0);
-            let motion = 0;
-            if (prevSmoothLm) {
-                vel = smoothLm.map((v, i) => v - prevSmoothLm[i]);
-                motion = vel.reduce((acc, v) => acc + Math.abs(v), 0) / 42;
-            }
-            prevSmoothLm = [...smoothLm];
-
-            const fstates = computeFingerStates(smoothLm);
-            const semanticFrame = [...smoothLm, ...vel, ...fstates];
-            const statusEl = document.getElementById("status");
-
-            // 3. Recording Logic (Synced with Python)
-            if (motion > BASE_MOTION_NOISE) {
-                sequence.push(semanticFrame);
-                noMotionCount = 0;
-                statusEl.innerText = "RECORDING...";
-                statusEl.className = "status recording";
-            } else {
-                if (sequence.length > 0) noMotionCount++;
-            }
-
-            // 4. Trigger Inference
-            if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
-                statusEl.innerText = "ANALYZING...";
-                
-                // Padding: Repeat last frame context
-                let seqArr = [...sequence];
-                const lastFrame = seqArr[seqArr.length - 1];
-                while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
-                if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
-
-                // Vectorized Normalization (NumPy style)
-                const flatData = new Float32Array(SEQ_LEN * VECTOR_LEN);
-                for (let i = 0; i < SEQ_LEN; i++) {
-                    for (let j = 0; j < VECTOR_LEN; j++) {
-                        flatData[i * VECTOR_LEN + j] = (seqArr[i][j] - normMean[j]) / (normStd[j] + 1e-6);
-                    }
-                }
-
-                const tensor = new ort.Tensor("float32", flatData, [1, SEQ_LEN, VECTOR_LEN]);
-
-                session.run({ [inputName]: tensor }).then(out => {
-                    const probs = softmax(Array.from(out[outputName].data));
-                    const idx = probs.indexOf(Math.max(...probs));
-                    const conf = probs[idx];
-                    
-                    document.getElementById("pred").innerText = conf >= CONF_THRESHOLD ? LABELS[idx] : "UNCERTAIN";
-                    document.getElementById("conf").innerText = `CONF: ${conf.toFixed(2)}`;
-                });
-
-                // Reset
-                sequence = []; noMotionCount = 0;
-                cooldown = COOLDOWN_FRAMES;
+                predEl.innerText = "---";
+                statusEl.innerText = "WAITING FOR HAND...";
             }
         });
 
         const camera = new Camera(video, { 
-            onFrame: async () => { await hands.send({image: video}); }, 
+            onFrame: async () => { 
+                // Flip the frame before sending to MediaPipe (matches Python cv2.flip)
+                tempCtx.save();
+                tempCtx.scale(-1, 1);
+                tempCtx.drawImage(video, -640, 0, 640, 480);
+                tempCtx.restore();
+                
+                // Send the flipped frame to MediaPipe for processing
+                await hands.send({image: tempCanvas});
+            }, 
             width: 640, height: 480 
         });
+
         loadAssets().then(() => camera.start());
     </script>
 </body>
