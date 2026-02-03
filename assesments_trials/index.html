@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>SignItUp - Learning Game</title>
+    <style>
+        body { 
+            margin:0; 
+            background:#111; 
+            color:#0f0; 
+            font-family:'Courier New', monospace; 
+            display:flex; 
+            flex-direction:column; 
+            align-items:center; 
+            padding-top: 20px;
+        }
+        
+        h2 { 
+            letter-spacing: 2px; 
+            text-transform: uppercase; 
+            margin-bottom: 10px; 
+        }
+        
+        #module-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .module-btn {
+            background: #222;
+            color: #0f0;
+            border: 2px solid #0f0;
+            padding: 15px 30px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: all 0.3s;
+            border-radius: 5px;
+        }
+        
+        .module-btn:hover {
+            background: #0f0;
+            color: #111;
+        }
+        
+        .module-btn.active {
+            background: #0f0;
+            color: #111;
+            font-weight: bold;
+        }
+
+        .module-btn:disabled {
+            background: #333;
+            color: #666;
+            border-color: #666;
+            cursor: not-allowed;
+        }
+        
+        #game-status {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        #target-sign {
+            font-size: 5em;
+            color: #0ff;
+            text-shadow: 0 0 20px #0ff;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+
+        #timer {
+            font-size: 2em;
+            color: #ff0;
+            text-shadow: 0 0 10px #ff0;
+        }
+
+        #timer.warning {
+            color: #f00;
+            animation: pulse 0.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        #progress-info {
+            color: #888;
+            font-size: 1.2em;
+            margin: 10px 0;
+        }
+        
+        #display-container { 
+            display: flex; 
+            gap: 10px; 
+            justify-content: center; 
+            transform: scaleX(-1); 
+        }
+        
+        .view-wrap { 
+            position:relative; 
+            width:640px; 
+            height:480px; 
+            border: 2px solid #333; 
+            border-radius: 8px; 
+            overflow: hidden; 
+            background: #000;
+        }
+        
+        #video, #canvas { 
+            position:absolute; 
+            top:0; 
+            left:0;
+            width: 640px; 
+            height: 480px;
+        }
+
+        .ui-panel { 
+            width: 640px; 
+            background: #1a1a1a; 
+            padding: 20px; 
+            border-radius: 0 0 10px 10px; 
+            border: 1px solid #333; 
+            text-align: center; 
+            margin-top: 10px; 
+            box-sizing: border-box;
+        }
+        
+        #pred { 
+            font-size: 3em; 
+            font-weight: bold; 
+            color: #0f0; 
+            text-shadow: 0 0 15px #0f0; 
+            margin: 10px 0; 
+        }
+
+        #pred.correct {
+            color: #0f0;
+            animation: success 0.5s;
+        }
+
+        @keyframes success {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+        }
+        
+        #status { 
+            color: #888; 
+            font-size: 0.9em; 
+            text-transform: uppercase; 
+            letter-spacing: 2px; 
+            height: 1.2em; 
+            margin-bottom: 5px;
+        }
+        
+        #info { 
+            color: #444; 
+            font-size: 0.7em; 
+        }
+
+        #results-screen {
+            display: none;
+            background: #1a1a1a;
+            border: 2px solid #0f0;
+            border-radius: 10px;
+            padding: 30px;
+            width: 600px;
+            margin: 20px 0;
+        }
+
+        #results-screen h3 {
+            color: #0f0;
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        .result-item {
+            background: #222;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .result-sign {
+            font-size: 2em;
+            color: #0ff;
+            font-weight: bold;
+        }
+
+        .result-stats {
+            text-align: right;
+        }
+
+        .result-time {
+            color: #ff0;
+            font-size: 1.2em;
+        }
+
+        .result-conf {
+            color: #0f0;
+            font-size: 1em;
+        }
+
+        #total-time {
+            font-size: 1.5em;
+            color: #0f0;
+            margin: 20px 0;
+            padding: 15px;
+            background: #222;
+            border-radius: 5px;
+        }
+
+        .recording { 
+            color: #f00 !important; 
+            font-weight: bold; 
+            animation: blink 1s infinite; 
+        }
+        
+        @keyframes blink { 
+            50% { opacity: 0.5; } 
+        }
+    </style>
+</head>
+
+<body>
+    <h2>SignItUp: Learning Game</h2>
+    
+    <div id="module-selector">
+        <button class="module-btn" onclick="selectModule(0)">MODULE 1: A-E</button>
+        <button class="module-btn" onclick="selectModule(1)">MODULE 2: F-J</button>
+        <button class="module-btn" onclick="selectModule(2)">MODULE 3: 1-5</button>
+    </div>
+
+    <div id="game-status">
+        <div id="target-sign">SELECT MODULE</div>
+        <div id="timer"></div>
+        <div id="progress-info"></div>
+    </div>
+
+    <div id="display-container">
+        <div class="view-wrap">
+            <video id="video" width="640" height="480" autoplay playsinline></video>
+            <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+    </div>
+
+    <div class="ui-panel">
+        <div id="status">System Initializing...</div>
+        <div id="pred">---</div>
+        <div id="info">Inference Engine: ONNX Runtime Web</div>
+    </div>
+
+    <div id="results-screen">
+        <h3>🎉 MODULE COMPLETED! 🎉</h3>
+        <div id="results-list"></div>
+        <div id="total-time"></div>
+        <button class="module-btn" onclick="resetGame()" style="margin-top: 20px;">PLAY AGAIN</button>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+
+    <script>
+        // ==================== HARDCODED MODULES ====================
+        // Specify which signs use dynamic model (require motion)
+        const DYNAMIC_SIGNS = ['J', 'Z', 'Ñ', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20'];
+        
+        const MODULES = [
+            {
+                name: "Module 1: A-E",
+                signs: ['A', 'B', 'C', 'D', 'E']
+            },
+            {
+                name: "Module 2: F-J",
+                signs: ['F', 'G', 'H', 'I', 'J']
+            },
+            {
+                name: "Module 3: Numbers 1-5",
+                signs: ['1', '2', '3', '4', '5']
+            }
+        ];
+
+        const TIME_LIMIT = 10; // seconds per sign
+
+        // ==================== DOM ELEMENTS ====================
+        const video = document.getElementById("video");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const predEl = document.getElementById("pred");
+        const statusEl = document.getElementById("status");
+        const infoEl = document.getElementById("info");
+        const targetSignEl = document.getElementById("target-sign");
+        const timerEl = document.getElementById("timer");
+        const progressEl = document.getElementById("progress-info");
+        const resultsScreen = document.getElementById("results-screen");
+
+        // Create a temporary canvas for flipping frames
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 640;
+        tempCanvas.height = 480;
+        const tempCtx = tempCanvas.getContext('2d');
+
+        // ==================== GAME STATE ====================
+        let currentModule = null;
+        let currentSignIndex = 0;
+        let gameActive = false;
+        let timeRemaining = TIME_LIMIT;
+        let timerInterval = null;
+        let signStartTime = 0;
+        let moduleStartTime = 0;
+        let results = [];
+        let lastPrediction = '';
+        let lastConfidence = 0;
+
+        // ==================== SHARED VARIABLES ====================
+        let hands = null;
+        let camera = null;
+
+        // ==================== STATIC MODE VARIABLES ====================
+        let staticSession = null;
+        let staticLabels = {};
+
+        // ==================== DYNAMIC MODE VARIABLES ====================
+        const SEQ_LEN = 50;
+        const VECTOR_LEN = 89;
+        const CONF_THRESHOLD = 0.65;
+        const COOLDOWN_FRAMES = 15;
+        const BASE_MOTION_NOISE = 0.003;
+        const NO_MOTION_REQUIRED = 8;
+        const SMOOTHING_ALPHA = 0.6;
+
+        let dynamicSession = null;
+        let dynamicInputName = null;
+        let dynamicOutputName = null;
+        let dynamicLabels = [];
+        let normMean = null;
+        let normStd = null;
+        let sequence = [];
+        let prevSmoothLm = null;
+        let noMotionCount = 0;
+        let cooldown = 0;
+        
+        // Game-specific dynamic prediction tracking
+        let lastDynamicPrediction = '';
+        let dynamicPredictionDebounce = 0;
+        const DEBOUNCE_FRAMES = 30; // Prevent same prediction for 30 frames (~1 second)
+
+        // ==================== UTILITY FUNCTIONS ====================
+        function isDynamicSign(sign) {
+            return DYNAMIC_SIGNS.includes(sign.toUpperCase());
+        }
+        
+        function getCurrentSignType() {
+            if (!currentModule || currentSignIndex >= currentModule.signs.length) {
+                return 'static';
+            }
+            const currentSign = currentModule.signs[currentSignIndex];
+            return isDynamicSign(currentSign) ? 'dynamic' : 'static';
+        }
+        
+        function softmax(arr) {
+            const m = Math.max(...arr);
+            const ex = arr.map(v => Math.exp(v - m));
+            const s = ex.reduce((a, b) => a + b, 0);
+            return ex.map(v => v / s);
+        }
+
+        function computeFingerStates(p) {
+            return [
+                p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,
+                p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,
+                p[12*2+1] < p[10*2+1] ? 1.0 : 0.0,
+                p[16*2+1] < p[14*2+1] ? 1.0 : 0.0,
+                p[20*2+1] < p[18*2+1] ? 1.0 : 0.0
+            ];
+        }
+
+        // ==================== STATIC MODE FUNCTIONS ====================
+        async function loadStaticAssets() {
+            try {
+                const lRes = await fetch(`./labels_static.json?v=${Date.now()}`);
+                staticLabels = await lRes.json();
+                staticSession = await ort.InferenceSession.create("./model_static.onnx");
+                console.log("✅ Static model loaded");
+                console.log("   Input names:", staticSession.inputNames);
+                console.log("   Output names:", staticSession.outputNames);
+                return true;
+            } catch (e) {
+                console.error("Error loading static assets:", e);
+                return false;
+            }
+        }
+
+        async function runStaticInference(landmarks) {
+            if (!staticSession || !gameActive) return;
+
+            // Prepare landmark lists for normalization (matching Python code)
+            const data_aux = [];
+            const x_coords = [];
+            const y_coords = [];
+
+            for (let lm of landmarks) {
+                x_coords.push(lm.x);
+                y_coords.push(lm.y);
+            }
+
+            // Normalize coordinates (Subtract min to make it location-independent)
+            const minX = Math.min(...x_coords);
+            const minY = Math.min(...y_coords);
+            
+            for (let lm of landmarks) {
+                data_aux.push(lm.x - minX);
+                data_aux.push(lm.y - minY);
+            }
+
+            const inputData = new Float32Array(data_aux);
+            const inputTensor = new ort.Tensor('float32', inputData, [1, 42]);
+
+            try {
+                // Run the model - only fetch first output (class label)
+                const input_name = staticSession.inputNames[0];
+                const label_output_name = staticSession.outputNames[0]; // Only get label output
+                
+                const outputs = await staticSession.run(
+                    { [input_name]: inputTensor },
+                    [label_output_name] // Request only the label output
+                );
+                
+                const prediction_index = outputs[label_output_name].data[0].toString();
+                const predicted_char = staticLabels[prediction_index];
+
+                if (predicted_char) {
+                    lastPrediction = predicted_char;
+                    lastConfidence = 0.85; // Static model doesn't return confidence in same way
+                    predEl.innerText = `${predicted_char}`;
+                    statusEl.innerText = "SIGN DETECTED";
+                    
+                    console.log("Static prediction:", predicted_char, "Target:", currentModule.signs[currentSignIndex]);
+                    
+                    // Check if correct
+                    checkPrediction(predicted_char, 0.85);
+                }
+            } catch (err) {
+                console.error("Static inference error:", err.message);
+            }
+        }
+
+        // ==================== DYNAMIC MODE FUNCTIONS ====================
+        async function loadDynamicAssets() {
+            try {
+                ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
+                const [mRes, sRes, lRes] = await Promise.all([
+                    fetch(`./norm_mean.json?v=${Date.now()}`),
+                    fetch(`./norm_std.json?v=${Date.now()}`),
+                    fetch(`./labels.json?v=${Date.now()}`)
+                ]);
+                normMean = await mRes.json();
+                normStd = await sRes.json();
+                dynamicLabels = await lRes.json();
+                dynamicSession = await ort.InferenceSession.create("./gesture_lstm.onnx");
+                dynamicInputName = dynamicSession.inputNames[0];
+                dynamicOutputName = dynamicSession.outputNames[0];
+                console.log("✅ Dynamic model loaded");
+                return true;
+            } catch (e) {
+                console.error("Error loading dynamic assets:", e);
+                return false;
+            }
+        }
+
+        async function runDynamicInference(hand) {
+            if (!dynamicSession || !normMean || !gameActive) return;
+
+            // Decrease debounce counter
+            if (dynamicPredictionDebounce > 0) {
+                dynamicPredictionDebounce--;
+            }
+
+            // 1. EMA Smoothing (matching reference code)
+            const currentLm = [];
+            for (let i = 0; i < 21; i++) {
+                currentLm.push(1.0 - hand[i].x); // Mirroring X
+                currentLm.push(hand[i].y);
+            }
+
+            let smoothLm;
+            if (!prevSmoothLm) {
+                smoothLm = currentLm;
+            } else {
+                smoothLm = currentLm.map((val, i) => 
+                    SMOOTHING_ALPHA * prevSmoothLm[i] + (1 - SMOOTHING_ALPHA) * val
+                );
+            }
+
+            // 2. Velocity & Motion Logic (matching reference code)
+            let vel = new Array(42).fill(0);
+            let motion = 0;
+            if (prevSmoothLm) {
+                vel = smoothLm.map((v, i) => v - prevSmoothLm[i]);
+                motion = vel.reduce((acc, v) => acc + Math.abs(v), 0) / 42;
+            }
+            prevSmoothLm = [...smoothLm];
+
+            const fstates = computeFingerStates(smoothLm);
+            const semanticFrame = [...smoothLm, ...vel, ...fstates];
+
+            // 3. Recording Logic (Synced with reference Python)
+            if (motion > BASE_MOTION_NOISE) {
+                sequence.push(semanticFrame);
+                noMotionCount = 0;
+                statusEl.innerText = "🔴 RECORDING GESTURE...";
+                statusEl.className = "recording";
+            } else {
+                if (sequence.length > 0) {
+                    noMotionCount++;
+                    statusEl.innerText = `MOTION STOPPED (${noMotionCount}/${NO_MOTION_REQUIRED})`;
+                }
+            }
+
+            // 4. Trigger Inference (matching reference code)
+            if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
+                statusEl.innerText = "⚡ ANALYZING GESTURE...";
+                statusEl.className = "";
+                
+                // Padding: Repeat last frame context (matching Python)
+                let seqArr = [...sequence];
+                const lastFrame = seqArr[seqArr.length - 1];
+                while (seqArr.length < SEQ_LEN) { 
+                    seqArr.push([...lastFrame]); 
+                }
+                if (seqArr.length > SEQ_LEN) { 
+                    seqArr = seqArr.slice(-SEQ_LEN); 
+                }
+
+                // Vectorized Normalization (NumPy style from reference)
+                const flatData = new Float32Array(SEQ_LEN * VECTOR_LEN);
+                for (let i = 0; i < SEQ_LEN; i++) {
+                    for (let j = 0; j < VECTOR_LEN; j++) {
+                        flatData[i * VECTOR_LEN + j] = (seqArr[i][j] - normMean[j]) / (normStd[j] + 1e-6);
+                    }
+                }
+
+                const tensor = new ort.Tensor("float32", flatData, [1, SEQ_LEN, VECTOR_LEN]);
+
+                try {
+                    const out = await dynamicSession.run({ [dynamicInputName]: tensor });
+                    const probs = softmax(Array.from(out[dynamicOutputName].data));
+                    const idx = probs.indexOf(Math.max(...probs));
+                    const conf = probs[idx];
+                    
+                    // Determine Display Logic based on Threshold (matching reference)
+                    let prediction, display_text;
+                    if (conf >= CONF_THRESHOLD) {
+                        prediction = dynamicLabels[idx];
+                        display_text = `${prediction} (${(conf * 100).toFixed(0)}%)`;
+                    } else {
+                        prediction = "UNCERTAIN";
+                        display_text = "Analyzing...";
+                    }
+                    
+                    lastPrediction = prediction;
+                    lastConfidence = conf;
+                    predEl.innerText = display_text;
+                    
+                    console.log("Dynamic prediction:", prediction, "Confidence:", conf.toFixed(2), "Target:", currentModule.signs[currentSignIndex], "Seq length:", sequence.length);
+                    
+                    // Only check if not in debounce period and high enough confidence
+                    if (prediction !== "UNCERTAIN" && conf >= CONF_THRESHOLD) {
+                        if (dynamicPredictionDebounce === 0 || prediction !== lastDynamicPrediction) {
+                            const isCorrect = checkPrediction(prediction, conf);
+                            
+                            // If correct, set debounce to prevent re-triggering
+                            if (isCorrect) {
+                                lastDynamicPrediction = prediction;
+                                dynamicPredictionDebounce = DEBOUNCE_FRAMES;
+                            }
+                        } else {
+                            console.log("⏭️ Skipped - still in debounce period");
+                        }
+                    }
+                } catch (err) {
+                    console.warn("Dynamic inference error:", err);
+                }
+
+                // Reset (matching reference)
+                sequence = [];
+                noMotionCount = 0;
+                cooldown = COOLDOWN_FRAMES;
+            }
+        }
+
+        // ==================== GAME LOGIC ====================
+        function selectModule(index) {
+            if (gameActive) return;
+            
+            currentModule = MODULES[index];
+            currentSignIndex = 0;
+            results = [];
+            
+            // Update button states
+            document.querySelectorAll('.module-btn').forEach((btn, i) => {
+                btn.classList.remove('active');
+                if (i === index) btn.classList.add('active');
+            });
+            
+            startGame();
+        }
+
+        async function startGame() {
+            // Load both models
+            if (!staticSession) {
+                statusEl.innerText = "Loading Static Model...";
+                const loaded = await loadStaticAssets();
+                if (!loaded) {
+                    statusEl.innerText = "Error Loading Static Model";
+                    return;
+                }
+            }
+            
+            if (!dynamicSession) {
+                statusEl.innerText = "Loading Dynamic Model...";
+                const loaded = await loadDynamicAssets();
+                if (!loaded) {
+                    statusEl.innerText = "Error Loading Dynamic Model";
+                    return;
+                }
+            }
+
+            gameActive = true;
+            moduleStartTime = Date.now();
+            resultsScreen.style.display = 'none';
+            
+            // Use unified handler that switches based on sign type
+            hands.onResults(onUnifiedGameResults);
+            
+            startNextSign();
+        }
+
+        function startNextSign() {
+            if (currentSignIndex >= currentModule.signs.length) {
+                endGame();
+                return;
+            }
+
+            const targetSign = currentModule.signs[currentSignIndex];
+            const signType = getCurrentSignType();
+            
+            targetSignEl.innerText = targetSign;
+            progressEl.innerText = `Sign ${currentSignIndex + 1} of ${currentModule.signs.length}`;
+            
+            // Update info to show current mode
+            infoEl.innerText = `Mode: ${signType.toUpperCase()} | ${signType === 'dynamic' ? 'Perform gesture with motion' : 'Hold static pose'}`;
+            
+            timeRemaining = TIME_LIMIT;
+            signStartTime = Date.now();
+            updateTimer();
+            
+            // Reset dynamic prediction tracking for new sign
+            lastDynamicPrediction = '';
+            dynamicPredictionDebounce = 0;
+            sequence = [];
+            prevSmoothLm = null;
+            noMotionCount = 0;
+            
+            // Start timer
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                timeRemaining--;
+                updateTimer();
+                
+                if (timeRemaining <= 0) {
+                    // Time's up - record as failed
+                    results.push({
+                        sign: targetSign,
+                        time: TIME_LIMIT,
+                        confidence: 0,
+                        success: false
+                    });
+                    currentSignIndex++;
+                    startNextSign();
+                }
+            }, 1000);
+            
+            // Reset prediction
+            predEl.innerText = "---";
+            statusEl.innerText = signType === 'dynamic' ? "Ready - Perform the gesture with motion!" : "Show the sign!";
+        }
+
+        function updateTimer() {
+            timerEl.innerText = `TIME: ${timeRemaining}s`;
+            if (timeRemaining <= 3) {
+                timerEl.classList.add('warning');
+            } else {
+                timerEl.classList.remove('warning');
+            }
+        }
+
+        function checkPrediction(prediction, confidence) {
+            const targetSign = currentModule.signs[currentSignIndex];
+            
+            // More flexible matching - case insensitive and trimmed
+            const predNorm = prediction.toString().trim().toUpperCase();
+            const targetNorm = targetSign.toString().trim().toUpperCase();
+            
+            console.log(`✓ Checking: "${predNorm}" vs "${targetNorm}" | Conf: ${confidence.toFixed(2)}`);
+            
+            // Use appropriate confidence threshold based on model type
+            const signType = getCurrentSignType();
+            const minConfidence = signType === 'dynamic' ? CONF_THRESHOLD : 0.75; // Dynamic uses 0.65, static uses 0.75
+            
+            if (predNorm === targetNorm && confidence >= minConfidence) {
+                // Correct!
+                const timeTaken = (Date.now() - signStartTime) / 1000;
+                
+                results.push({
+                    sign: targetSign,
+                    time: timeTaken.toFixed(2),
+                    confidence: confidence.toFixed(2),
+                    success: true
+                });
+                
+                predEl.classList.add('correct');
+                statusEl.innerText = "✅ CORRECT!";
+                statusEl.style.color = "#0f0";
+                
+                setTimeout(() => {
+                    predEl.classList.remove('correct');
+                    statusEl.style.color = "#888";
+                }, 500);
+                
+                clearInterval(timerInterval);
+                currentSignIndex++;
+                
+                // Wait a bit before next sign
+                setTimeout(() => {
+                    startNextSign();
+                }, 1500);
+                
+                return true; // Return true if correct
+            }
+            
+            return false; // Return false if not correct
+        }
+
+        function endGame() {
+            gameActive = false;
+            clearInterval(timerInterval);
+            
+            const totalTime = ((Date.now() - moduleStartTime) / 1000).toFixed(2);
+            
+            // Show results
+            targetSignEl.innerText = "COMPLETED!";
+            timerEl.innerText = "";
+            progressEl.innerText = "";
+            
+            // Generate results HTML
+            let resultsHTML = '';
+            results.forEach(result => {
+                resultsHTML += `
+                    <div class="result-item">
+                        <div class="result-sign">${result.sign}</div>
+                        <div class="result-stats">
+                            <div class="result-time">${result.success ? result.time + 's' : 'TIMEOUT'}</div>
+                            <div class="result-conf">${result.success ? 'Confidence: ' + (result.confidence * 100).toFixed(0) + '%' : 'Not completed'}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            document.getElementById('results-list').innerHTML = resultsHTML;
+            document.getElementById('total-time').innerText = `Total Time: ${totalTime}s`;
+            resultsScreen.style.display = 'block';
+            
+            // Disable module buttons
+            document.querySelectorAll('.module-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+        }
+
+        function resetGame() {
+            gameActive = false;
+            currentModule = null;
+            currentSignIndex = 0;
+            results = [];
+            
+            targetSignEl.innerText = "SELECT MODULE";
+            timerEl.innerText = "";
+            progressEl.innerText = "";
+            predEl.innerText = "---";
+            statusEl.innerText = "Ready";
+            
+            resultsScreen.style.display = 'none';
+        }
+
+        // ==================== UNIFIED MEDIAPIPE HANDLER ====================
+        function onUnifiedGameResults(res) {
+            ctx.clearRect(0, 0, 640, 480);
+            
+            const signType = getCurrentSignType();
+            
+            // Route to appropriate handler based on current sign type
+            if (signType === 'dynamic') {
+                handleDynamicSign(res);
+            } else {
+                handleStaticSign(res);
+            }
+        }
+        
+        function handleStaticSign(res) {
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                const hand = res.multiHandLandmarks[0];
+
+                ctx.save();
+                ctx.scale(-1, 1);
+                ctx.translate(-640, 0);
+                drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: "#0f0", lineWidth: 2});
+                drawLandmarks(ctx, hand, {color: "#fff", radius: 2});
+                ctx.restore();
+
+                runStaticInference(hand);
+            } else {
+                if (gameActive) {
+                    predEl.innerText = "---";
+                    statusEl.innerText = "WAITING FOR HAND...";
+                }
+            }
+        }
+        
+        function handleDynamicSign(res) {
+            if (cooldown > 0) {
+                cooldown--;
+                return;
+            }
+
+            if (!res.multiHandLandmarks || res.multiHandLandmarks.length === 0) {
+                sequence = [];
+                prevSmoothLm = null;
+                noMotionCount = 0;
+                if (gameActive && dynamicPredictionDebounce === 0) {
+                    statusEl.innerText = "READY - Move your hand to start gesture";
+                    statusEl.className = "";
+                }
+                return;
+            }
+
+            const hand = res.multiHandLandmarks[0];
+            
+            // Draw with different color based on recording state
+            const color = sequence.length > 0 ? "#f00" : "#0f0"; // Red when recording, green when idle
+            
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.translate(-640, 0);
+            drawConnectors(ctx, hand, HAND_CONNECTIONS, {color: color, lineWidth: 3});
+            drawLandmarks(ctx, hand, {color: "#fff", radius: 3});
+            ctx.restore();
+
+            runDynamicInference(hand);
+        }
+        
+        // Keep old handlers for reference but they're not used anymore
+        function onStaticGameResults(res) {
+            onUnifiedGameResults(res);
+        }
+
+        function onDynamicGameResults(res) {
+            onUnifiedGameResults(res);
+        }
+
+        // ==================== INITIALIZATION ====================
+        async function init() {
+            hands = new Hands({ 
+                locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` 
+            });
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.75,
+                minTrackingConfidence: 0.7
+            });
+
+            // Load static model by default
+            const loaded = await loadStaticAssets();
+            if (loaded) {
+                statusEl.innerText = "Ready - Select a module to begin";
+            } else {
+                statusEl.innerText = "Error Loading Assets";
+            }
+
+            // Start camera
+            camera = new Camera(video, { 
+                onFrame: async () => { 
+                    tempCtx.save();
+                    tempCtx.scale(-1, 1);
+                    tempCtx.drawImage(video, -640, 0, 640, 480);
+                    tempCtx.restore();
+                    await hands.send({image: tempCanvas});
+                }, 
+                width: 640, 
+                height: 480 
+            });
+
+            camera.start();
+        }
+
+        // Start the application
+        init();
+    </script>
+</body>
+</html>
