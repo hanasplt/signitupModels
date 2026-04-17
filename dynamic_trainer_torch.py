@@ -232,6 +232,7 @@ for epoch in range(1, EPOCHS + 1):
           f"val-loss {val_losses[-1]:.4f} val-acc {val_accs[-1]:.3f}")
 
 plt.ioff()
+plt.savefig(os.path.join(SAVE_DIR, "training_history.jpg"), format='jpg', dpi=150, bbox_inches='tight')
 plt.show()
 
 # =========================================================
@@ -270,6 +271,7 @@ for i in range(num_classes):
                  color="white" if cm[i,j] > cm.max()/2 else "black")
 
 plt.tight_layout()
+plt.savefig(os.path.join(SAVE_DIR, "confusion_matrix.jpg"), format='jpg', dpi=150, bbox_inches='tight')
 plt.show()
 
 # =========================================================
