@@ -13,8 +13,8 @@ import time
 # ==========================================================
 # CONFIG
 # ==========================================================
-MODEL_PATH = "web_demo/gesture_lstm.onnx"
-LABEL_ENCODER_PATH = "web_demo/label_encoder.pickle"
+MODEL_PATH = "web_demo/ALPHANUM/gesture_lstm_ALPHANUM.onnx"
+LABEL_ENCODER_PATH = "web_demo/ALPHANUM/label_encoder_ALPHANUM.pickle"
 
 SEQ_LEN = 50
 VECTOR_LEN = 89 
@@ -37,8 +37,8 @@ with open(LABEL_ENCODER_PATH, "rb") as f:
 CLASSES = list(le.classes_)
 
 # ✅ FIXED: Flatten normalization arrays to prevent Rank/Dimension errors
-norm_mean = np.load("web_demo/norm_mean.npy").flatten().astype(np.float32)
-norm_std  = np.load("web_demo/norm_std.npy").flatten().astype(np.float32)
+norm_mean = np.load("web_demo/ALPHANUM/norm_mean_ALPHANUM.npy").flatten().astype(np.float32)
+norm_std  = np.load("web_demo/ALPHANUM/norm_std_ALPHANUM.npy").flatten().astype(np.float32)
 
 def softmax(x):
     e = np.exp(x - np.max(x))

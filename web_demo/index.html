@@ -208,6 +208,8 @@
         }
 
         function computeFingerStates(p) {
+            // p is interleaved [x0, y0, x1, y1...]
+            // Index logic: (LandmarkID * 2) + 1 for Y-coordinate
             return [
                 p[4*2+1]  < p[3*2+1] ? 1.0 : 0.0,  // Thumb
                 p[8*2+1]  < p[6*2+1] ? 1.0 : 0.0,  // Index
@@ -270,14 +272,14 @@
             try {
                 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
                 const [mRes, sRes, lRes] = await Promise.all([
-                    fetch(`./norm_mean.json?v=${Date.now()}`),
-                    fetch(`./norm_std.json?v=${Date.now()}`),
-                    fetch(`./labels.json?v=${Date.now()}`)
+                    fetch(`./ALPHANUM/norm_mean_ALPHANUM.json?v=${Date.now()}`),
+                    fetch(`./ALPHANUM/norm_std_ALPHANUM.json?v=${Date.now()}`),
+                    fetch(`./ALPHANUM/labels_ALPHANUM.json?v=${Date.now()}`)
                 ]);
                 normMean = await mRes.json();
                 normStd = await sRes.json();
                 dynamicLabels = await lRes.json();
-                dynamicSession = await ort.InferenceSession.create("./gesture_lstm.onnx");
+                dynamicSession = await ort.InferenceSession.create("./ALPHANUM/gesture_lstm_ALPHANUM.onnx");
                 dynamicInputName = dynamicSession.inputNames[0];
                 dynamicOutputName = dynamicSession.outputNames[0];
                 return true;
@@ -290,13 +292,14 @@
         async function runDynamicInference(hand) {
             if (!dynamicSession || !normMean) return;
 
-            // 1. EMA Smoothing
+            // 1. Coordinate Extraction (X/Y Normalized 0-1)
             const currentLm = [];
             for (let i = 0; i < 21; i++) {
-                currentLm.push(1.0 - hand[i].x); // Mirroring X
+                currentLm.push(hand[i].x); 
                 currentLm.push(hand[i].y);
             }
 
+            // 2. EMA Smoothing
             let smoothLm;
             if (!prevSmoothLm) {
                 smoothLm = currentLm;
@@ -306,19 +309,19 @@
                 );
             }
 
-            // 2. Velocity & Motion Logic
+            // 3. Velocity & Motion Logic
             let vel = new Array(42).fill(0);
             let motion = 0;
             if (prevSmoothLm) {
+                // Velocity = smooth_current - prev_smooth (Matches Python script)
                 vel = smoothLm.map((v, i) => v - prevSmoothLm[i]);
                 motion = vel.reduce((acc, v) => acc + Math.abs(v), 0) / 42;
             }
-            prevSmoothLm = [...smoothLm];
-
+            
             const fstates = computeFingerStates(smoothLm);
             const semanticFrame = [...smoothLm, ...vel, ...fstates];
 
-            // 3. Recording Logic
+            // 4. Recording Logic
             if (motion > BASE_MOTION_NOISE) {
                 sequence.push(semanticFrame);
                 noMotionCount = 0;
@@ -327,13 +330,20 @@
             } else {
                 if (sequence.length > 0) noMotionCount++;
             }
+            
+            // IMPORTANT: Update prevSmoothLm AFTER velocity calc
+            prevSmoothLm = [...smoothLm];
 
-            // 4. Trigger Inference
+            // 5. Trigger Inference
             if (noMotionCount >= NO_MOTION_REQUIRED && sequence.length >= 15) {
                 statusEl.innerText = "ANALYZING...";
                 statusEl.className = "";
                 
                 let seqArr = [...sequence];
+                
+                // ✅ MATCH PADDING: If you trained with Zeros, use Zeros. 
+                // If your Python inference used repetition, use repetition.
+                // Switching to repetition to match your FIXED RANK python snippet:
                 const lastFrame = seqArr[seqArr.length - 1];
                 while (seqArr.length < SEQ_LEN) { seqArr.push([...lastFrame]); }
                 if (seqArr.length > SEQ_LEN) { seqArr = seqArr.slice(-SEQ_LEN); }
@@ -341,6 +351,7 @@
                 const flatData = new Float32Array(SEQ_LEN * VECTOR_LEN);
                 for (let i = 0; i < SEQ_LEN; i++) {
                     for (let j = 0; j < VECTOR_LEN; j++) {
+                        // (Value - Mean) / Std
                         flatData[i * VECTOR_LEN + j] = (seqArr[i][j] - normMean[j]) / (normStd[j] + 1e-6);
                     }
                 }
@@ -359,6 +370,7 @@
                     console.warn("Dynamic inference error:", err);
                 }
 
+                // Reset state for next gesture
                 sequence = [];
                 noMotionCount = 0;
                 cooldown = COOLDOWN_FRAMES;
@@ -499,6 +511,7 @@
             // Start camera
             camera = new Camera(video, { 
                 onFrame: async () => { 
+                    // Important: Draw video to canvas to handle mirroring correctly
                     tempCtx.save();
                     tempCtx.scale(-1, 1);
                     tempCtx.drawImage(video, -640, 0, 640, 480);

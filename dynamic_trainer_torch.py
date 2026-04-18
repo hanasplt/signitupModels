@@ -15,9 +15,9 @@ BATCH_SIZE = 10
 LR = 1e-3
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-SAVE_DIR = "./web_demo"
-ONNX_NAME = "gesture_lstm.onnx"
-ENCODER_NAME = "label_encoder.pickle"
+SAVE_DIR = "./web_demo/ALPHANUM"
+ONNX_NAME = "gesture_lstm_ALPHANUM.onnx"
+ENCODER_NAME = "label_encoder_ALPHANUM.pickle"
 
 FRAME_COUNT = 50
 
@@ -32,7 +32,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 # 1. LOAD DATA
 # =========================================================
 
-with open('./processed_data/dynamic_gestures_data_VISUAL.p','rb') as f:
+with open('./processed_data/dynamic_gestures_data_ALPHANUM.p','rb') as f:
     data_dict = pickle.load(f)
 
 X_raw, y_raw = data_dict['data'], data_dict['labels']
@@ -89,17 +89,17 @@ std = X.std(axis=(0, 1)) + 1e-6
 X = (X - mean) / std
 
 # Save as .npy for Python/Research use
-np.save(os.path.join(SAVE_DIR, "norm_mean.npy"), mean)
-np.save(os.path.join(SAVE_DIR, "norm_std.npy"), std)
+np.save(os.path.join(SAVE_DIR, "norm_mean_ALPHANUM.npy"), mean)
+np.save(os.path.join(SAVE_DIR, "norm_std_ALPHANUM.npy"), std)
 
 # Save as .json for the Web App (ONNX Runtime)
 # We use .tolist() to ensure it is a clean JSON array
 import json
 
-with open(os.path.join(SAVE_DIR, "norm_mean.json"), "w") as f:
+with open(os.path.join(SAVE_DIR, "norm_mean_ALPHANUM.json"), "w") as f:
     json.dump(mean.tolist(), f)
 
-with open(os.path.join(SAVE_DIR, "norm_std.json"), "w") as f:
+with open(os.path.join(SAVE_DIR, "norm_std_ALPHANUM.json"), "w") as f:
     json.dump(std.tolist(), f)
 
 print(f"✅ Normalization assets saved to {SAVE_DIR}")
@@ -232,7 +232,7 @@ for epoch in range(1, EPOCHS + 1):
           f"val-loss {val_losses[-1]:.4f} val-acc {val_accs[-1]:.3f}")
 
 plt.ioff()
-plt.savefig(os.path.join(SAVE_DIR, "training_history.jpg"), format='jpg', dpi=150, bbox_inches='tight')
+plt.savefig(os.path.join(SAVE_DIR, "training_history_ALPHANUM.jpg"), format='jpg', dpi=150, bbox_inches='tight')
 plt.show()
 
 # =========================================================
@@ -271,7 +271,7 @@ for i in range(num_classes):
                  color="white" if cm[i,j] > cm.max()/2 else "black")
 
 plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR, "confusion_matrix.jpg"), format='jpg', dpi=150, bbox_inches='tight')
+plt.savefig(os.path.join(SAVE_DIR, "confusion_matrix_ALPHANUM.jpg"), format='jpg', dpi=150, bbox_inches='tight')
 plt.show()
 
 # =========================================================
@@ -292,5 +292,9 @@ torch.onnx.export(
 
 with open(os.path.join(SAVE_DIR, ENCODER_NAME), 'wb') as f:
     pickle.dump(le, f)
+
+# Save label classes as JSON for web app compatibility
+with open(os.path.join(SAVE_DIR, "labels_ALPHANUM.json"), "w") as f:
+    json.dump(le.classes_.tolist(), f)
 
 print("✅ Semantic-feature model trained, evaluated, and exported")
