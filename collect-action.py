@@ -3,10 +3,10 @@ import cv2
 import os
 import time
 
-DATA_DIR = './data_videos'
+DATA_DIR = './data_videos/PHRASES'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-GESTURE_CLASSES = ['EMERGENCY']  # Add more gesture names as needed
+GESTURE_CLASSES = ['WAIT']  # Add more gesture names as needed
 VIDEOS_PER_CLASS = 10
 VIDEO_DURATION = 2  # seconds per video
 FPS = 30

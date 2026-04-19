@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-DATA_DIR = './data_videos/ALPHABET+NUMBERS'           # Base folder containing gesture folders
+DATA_DIR = './data_videos/PHRASES'           # Base folder containing gesture folders
 OUTPUT_DIR = './processed_data'      # Folder where output .p file will be saved
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'dynamic_gestures_data_ALPHANUM.p')
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'dynamic_gestures_data_PHRASE.p')
 SEQUENCE_LENGTH = 50
 MOTION_THRESHOLD = 0.001
 INCLUDE_IDLE = True

@@ -58,10 +58,10 @@ def mirror_videos(input_folder, output_folder, target_files=None):
 
 # Use a list comprehension to generate the names from 1 to 11
 # f"{i:04}" ensures the number is 4 digits long (0001, 0002, etc.)
-files_to_mirror = [f"Z_{i:04}.mp4" for i in range(1, 12)]
+files_to_mirror = [f"WAIT_{i:04}.mp4" for i in range(1, 12)]
 
 mirror_videos(
-    input_folder='./data_videos/ALPHABET+NUMBERS/Z', 
-    output_folder='./data_videos/ALPHABET+NUMBERS/Z/Z_flipped', 
+    input_folder='./data_videos/PHRASES/WAIT', 
+    output_folder='./data_videos/PHRASES/WAIT/WAIT_flipped', 
     target_files=files_to_mirror
 )
