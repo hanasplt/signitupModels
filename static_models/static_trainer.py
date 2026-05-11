@@ -7,6 +7,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 
 # ONNX specific imports
 from skl2onnx import convert_sklearn
@@ -91,3 +95,67 @@ label_map = {str(i): label for i, label in enumerate(class_names)}
 with open(LABELS_JSON, 'w', encoding='utf-8') as f:
     json.dump(label_map, f, ensure_ascii=False, indent=4)
 print(f"📄 Saved OBJECT format to: {LABELS_JSON}")
+
+# ----------------------------------------
+# CONFUSION MATRIX
+# ----------------------------------------
+cm = confusion_matrix(y_test, y_predict)
+cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
+
+plt.figure(figsize=(12, 10))
+sns.heatmap(cm_df, annot=True, fmt='d', cmap='Blues', linewidths=0.5)
+plt.title('Confusion Matrix', fontsize=16)
+plt.ylabel('True Label', fontsize=13)
+plt.xlabel('Predicted Label', fontsize=13)
+plt.tight_layout()
+plt.savefig('./static_models/confusion_matrix.png', dpi=150)
+plt.close()
+print("📊 Saved confusion matrix to: ./static_models/confusion_matrix.png")
+
+# Also save the raw numbers as CSV (useful for LaTeX tables)
+cm_df.to_csv('./static_models/confusion_matrix.csv')
+
+# Per-class metrics (precision, recall, F1)
+report = classification_report(y_test, y_predict, target_names=class_names, output_dict=True)
+report_df = pd.DataFrame(report).transpose()
+report_df.to_csv('./static_models/classification_report.csv')
+print("📄 Saved classification report to: ./static_models/classification_report.csv")
+
+# ----------------------------------------
+# TRAINING HISTORY (OOB Score per n_estimators)
+# ----------------------------------------
+print("📈 Computing training history via OOB scores...")
+oob_scores = []
+train_accuracies = []
+estimator_range = range(1, 101, 5)  # 1, 6, 11, ... 96, 101 -> adjust as needed
+
+for n in estimator_range:
+    rf = RandomForestClassifier(n_estimators=n, oob_score=True, random_state=42)
+    rf.fit(x_train, y_train)
+    oob_scores.append(rf.oob_score_)
+    train_acc = accuracy_score(y_train, rf.predict(x_train))
+    train_accuracies.append(train_acc)
+
+# Save history as CSV
+history_df = pd.DataFrame({
+    'n_estimators': list(estimator_range),
+    'oob_score': oob_scores,
+    'train_accuracy': train_accuracies
+})
+history_df.to_csv('./static_models/training_history.csv', index=False)
+print("📄 Saved training history to: ./static_models/training_history.csv")
+
+# Plot training history
+plt.figure(figsize=(10, 5))
+plt.plot(list(estimator_range), oob_scores, marker='o', label='OOB Score (≈ Validation)', color='steelblue')
+plt.plot(list(estimator_range), train_accuracies, marker='s', label='Train Accuracy', color='coral')
+plt.title('Random Forest Training History', fontsize=15)
+plt.xlabel('Number of Trees (n_estimators)', fontsize=12)
+plt.ylabel('Accuracy', fontsize=12)
+plt.ylim(0, 1.05)
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('./static_models/training_history.png', dpi=150)
+plt.close()
+print("📊 Saved training history plot to: ./static_models/training_history.png")
